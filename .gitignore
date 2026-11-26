@@ -26,3 +26,13 @@ android/app/build/
 android/local.properties
 android/app/src/main/jniLibs/
 android/app/src/main/java/org/
+
+# built here or by CI
+/wildguns
+/WildGuns*.zip
+/WildGuns-*
+android/app/jni/SDL/
+android/app/.cxx/
+android/app/src/main/assets/licenses/
+/SDL2-*/
+/snes9x/

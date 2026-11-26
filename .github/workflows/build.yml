@@ -1,140 +1,158 @@
-name: Build Windows, Linux AppImage & Android APK
+# Builds WildGuns for Windows, Linux and Android on every push to main and
+# publishes (or updates) the release v<VERSION>. The packages hold the program,
+# SDL2 and the snes9x libretro core: no game. Each player uses their own ROM.
+name: build
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
+    branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: write
+env:
+  SDL: 2.30.9
+  SNES9X: fae2fea08f74180759ef540ee94259213f503480
 
 jobs:
   windows:
-    runs-on: windows-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download SDL2 & snes9x_libretro (x64)
-        shell: pwsh
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 zip
+      - name: SDL2 for MinGW
+        run: curl -sSfL --retry 5 https://github.com/libsdl-org/SDL/releases/download/release-$SDL/SDL2-devel-$SDL-mingw.tar.gz | tar xz
+      - name: snes9x core
         run: |
-          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-2.30.10/SDL2-devel-2.30.10-VC.zip" -OutFile sdl2.zip
-          Expand-Archive sdl2.zip -DestinationPath vendor -Force
-          Copy-Item "vendor\SDL2-2.30.10\lib\x64\SDL2.dll" -Destination "." -Force
-          Invoke-WebRequest -Uri "https://buildbot.libretro.com/nightly/windows/x86_64/latest/snes9x_libretro.dll.zip" -OutFile core.zip
-          Expand-Archive core.zip -DestinationPath "." -Force
-
-      - name: Compile WildGuns.exe (MSVC x64)
-        shell: cmd
+          git clone -q https://github.com/libretro/snes9x.git && git -C snes9x checkout -q $SNES9X
+          make -C snes9x/libretro -j4 platform=win CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
+      - name: Build
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          cl /nologo /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Isrc /Ivendor\SDL2-2.30.10\include src\wildguns.c /Fe:WildGuns.exe /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup vendor\SDL2-2.30.10\lib\x64\SDL2.lib comdlg32.lib user32.lib
-
-      - name: Package Windows release
-        shell: pwsh
+          S=SDL2-$SDL/x86_64-w64-mingw32
+          x86_64-w64-mingw32-gcc -O2 -Isrc -I$S/include/SDL2 -I$S/include src/wildguns.c -o WildGuns.exe \
+            -L$S/lib -lmingw32 -lSDL2main -lSDL2 -lcomdlg32 -luser32 -lshell32 -lm -mwindows -static-libgcc
+      - name: Package
         run: |
-          New-Item -ItemType Directory -Force dist\win | Out-Null
-          Copy-Item WildGuns.exe, SDL2.dll, snes9x_libretro.dll, LEEME.txt -Destination dist\win
-          Compress-Archive -Path dist\win\* -DestinationPath WildGuns-Windows-x64.zip -Force
-
+          out=WildGuns-Windows
+          mkdir -p $out/licenses
+          cp WildGuns.exe SDL2-$SDL/x86_64-w64-mingw32/bin/SDL2.dll snes9x/libretro/snes9x_libretro.dll $out/
+          cp LEEME.txt README.md $out/
+          cp SDL2-$SDL/LICENSE.txt $out/licenses/SDL2-LICENSE.txt 2>/dev/null || true
+          cp snes9x/LICENSE $out/licenses/snes9x-LICENSE.txt
+          zip -qr9 WildGuns-Windows.zip $out
       - uses: actions/upload-artifact@v4
-        with:
-          name: WildGuns-Windows-x64
-          path: WildGuns-Windows-x64.zip
+        with: { name: WildGuns-Windows, path: WildGuns-Windows.zip }
 
-  linux-appimage:
-    runs-on: ubuntu-latest
+  linux:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install SDL2 & tools
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev patchelf
+      - name: snes9x core
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev unzip wget file
-
-      - name: Fetch snes9x_libretro.so & appimagetool
-        run: |
-          wget -q https://buildbot.libretro.com/nightly/linux/x86_64/latest/snes9x_libretro.so.zip
-          unzip -o snes9x_libretro.so.zip
-          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
-          chmod +x /tmp/appimagetool
-          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
-
-      - name: Build WildGuns-x86_64.AppImage
+          git clone -q https://github.com/libretro/snes9x.git && git -C snes9x checkout -q $SNES9X
+          make -C snes9x/libretro -j4
+      - name: Build
         run: |
           make
-          APPIMAGE_EXTRACT_AND_RUN=1 bash packaging/linux/build_appimage.sh
-
+          patchelf --set-rpath '$ORIGIN/lib' wildguns
+      - name: Package
+        run: |
+          out=WildGuns-Linux
+          mkdir -p $out/lib $out/licenses
+          cp wildguns snes9x/libretro/snes9x_libretro.so $out/
+          cp -L $(ldconfig -p | awk '/libSDL2-2.0.so.0 /{print $NF; exit}') $out/lib/
+          cp LEEME.txt README.md $out/
+          cp snes9x/LICENSE $out/licenses/snes9x-LICENSE.txt
+          tar -czf WildGuns-Linux.tar.gz $out
       - uses: actions/upload-artifact@v4
-        with:
-          name: WildGuns-Linux-AppImage
-          path: WildGuns-x86_64.AppImage
+        with: { name: WildGuns-Linux, path: WildGuns-Linux.tar.gz }
 
-  android-apk:
-    runs-on: ubuntu-latest
+  android:
+    runs-on: ubuntu-24.04
+    outputs:
+      signed: ${{ steps.key.outputs.signed }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
+        with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.7
-
-      - name: Fetch SDL2 source & Android snes9x cores
+        with: { gradle-version: '8.9' }
+      - name: SDL2 sources
+        run: curl -sSfL --retry 5 https://github.com/libsdl-org/SDL/releases/download/release-$SDL/SDL2-$SDL.tar.gz | tar xz
+      - name: snes9x core for the phone
         run: |
-          mkdir -p vendor android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/armeabi-v7a
-          git clone --depth 1 --branch release-2.30.10 https://github.com/libsdl-org/SDL.git vendor/SDL2
-          cp -r vendor/SDL2/android-project/app/src/main/java/org android/app/src/main/java/
-          wget -q https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/snes9x_libretro_android.so.zip -O core64.zip
-          unzip -o core64.zip -d /tmp/c64
-          cp /tmp/c64/snes9x_libretro_android.so android/app/src/main/jniLibs/arm64-v8a/libsnes9x_libretro.so
-          wget -q https://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/snes9x_libretro_android.so.zip -O core32.zip
-          unzip -o core32.zip -d /tmp/c32
-          cp /tmp/c32/snes9x_libretro_android.so android/app/src/main/jniLibs/armeabi-v7a/libsnes9x_libretro.so
-
-      - name: Decode signing keystore (if configured)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+          git clone -q https://github.com/libretro/snes9x.git && git -C snes9x checkout -q $SNES9X
+          cd snes9x/libretro/jni && $ANDROID_NDK_HOME/ndk-build -j4 APP_ABI="arm64-v8a armeabi-v7a x86_64"
+      - name: Prepare
+        run: |
+          sh tools/android-prepare.sh SDL2-$SDL snes9x/libretro/libs
+          mkdir -p android/app/src/main/assets/licenses
+          cp snes9x/LICENSE android/app/src/main/assets/licenses/snes9x-LICENSE.txt
+          cp SDL2-$SDL/LICENSE.txt android/app/src/main/assets/licenses/SDL2-LICENSE.txt
+      - name: Signing key
+        id: key
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-
-      - name: Build Android APK
-        working-directory: android
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          if [ -n "${KEYSTORE_FILE:-}" ]; then
-            gradle assembleRelease
-            cp app/build/outputs/apk/release/app-release.apk ../WildGuns-Android.apk
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > $RUNNER_TEMP/release.keystore
+            echo "ANDROID_KEYSTORE=$RUNNER_TEMP/release.keystore" >> $GITHUB_ENV
+            echo "signed=true" >> $GITHUB_OUTPUT
           else
-            gradle assembleDebug
-            cp app/build/outputs/apk/debug/app-debug.apk ../WildGuns-Android.apk
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret: the APK is signed with a throwaway debug key and is not published"
           fi
-
+      - name: Build
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ndk=$(sed -n 's/^Pkg.Revision *= *//p' $ANDROID_NDK_HOME/source.properties)
+          v=$(cat VERSION)
+          cd android
+          gradle --no-daemon assembleRelease -PndkVersion=$ndk -PversionCode=${{ github.run_number }} -PversionName=$v
+          cp app/build/outputs/apk/release/app-release.apk ../WildGuns-Android.apk
+          cd ..
+          for c in 'Lcom/vito2492/wildguns/WildGunsActivity;' 'Lorg/libsdl/app/SDLActivity;'; do
+            unzip -p WildGuns-Android.apk 'classes*.dex' | grep -aqF "$c" || { echo "::error::$c is missing from the APK"; exit 1; }
+          done
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            for so in libmain.so libSDL2.so libsnes9x_libretro.so; do
+              unzip -l WildGuns-Android.apk | grep -q "lib/$abi/$so" || { echo "::error::lib/$abi/$so is missing from the APK"; exit 1; }
+            done
+          done
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner verify --print-certs WildGuns-Android.apk | grep -i "SHA-256"
       - uses: actions/upload-artifact@v4
-        with:
-          name: WildGuns-Android-APK
-          path: WildGuns-Android.apk
+        with: { name: WildGuns-Android, path: WildGuns-Android.apk }
 
   release:
-    needs: [ windows, linux-appimage, android-apk ]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    # The APK is published only when signed with the fixed key, so every
+    # version installs over the previous one and keeps the saves.
+    if: github.ref == 'refs/heads/main'
+    needs: [windows, linux, android]
+    runs-on: ubuntu-24.04
+    permissions: { contents: write }
     steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "tag=v$(cat VERSION)" >> $GITHUB_OUTPUT
       - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+        with: { merge-multiple: true }
+      - name: Keep the APK only if signed
+        if: needs.android.outputs.signed != 'true'
+        run: rm -f WildGuns-Android.apk
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "Wild Guns: Frontier Edition ${{ steps.v.outputs.tag }}"
+          body: |
+            Windows: descomprimí WildGuns-Windows.zip, poné tu ROM "Wild Guns (USA).sfc" al lado de WildGuns.exe y abrilo (o elegila cuando la pida).
+            Linux: descomprimí WildGuns-Linux.tar.gz, poné la ROM al lado y corré ./wildguns
+            Android: instalá WildGuns-Android.apk (hay que permitir apps de origen desconocido). La primera vez te pide elegir tu ROM (.sfc, .smc o .zip). Las versiones nuevas se instalan encima y conservan las partidas.
+            No incluye el juego: usá tu propia copia (versión USA).
           files: |
-            artifacts/WildGuns-Windows-x64/WildGuns-Windows-x64.zip
-            artifacts/WildGuns-Linux-AppImage/WildGuns-x86_64.AppImage
-            artifacts/WildGuns-Android-APK/WildGuns-Android.apk
+            WildGuns-Windows.zip
+            WildGuns-Linux.tar.gz
+            WildGuns-Android.apk

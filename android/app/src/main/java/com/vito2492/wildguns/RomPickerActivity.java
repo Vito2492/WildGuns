@@ -81,7 +81,7 @@ public class RomPickerActivity extends Activity {
             int n;
             while ((n = in.read(tmp)) > 0) buf.write(tmp, 0, n);
             in.close();
-            byte[] raw = buf.toByteArray();
+            byte[] raw = unzipRom(buf.toByteArray());
             int off = (raw.length == ROM_SIZE + 512) ? 512 : 0; // strip 512-byte SMC copier header
             if (raw.length - off != ROM_SIZE) {
                 Toast.makeText(this, "ROM invalida: debe ser Wild Guns (SNES) de 1 MB.", Toast.LENGTH_LONG).show();
@@ -104,5 +104,23 @@ public class RomPickerActivity extends Activity {
             Toast.makeText(this, "Error leyendo la ROM: " + e.getMessage(), Toast.LENGTH_LONG).show();
             promptForRom();
         }
+    }
+
+    /** Accepts the ROM loose or inside a .zip (first .sfc/.smc entry). */
+    static byte[] unzipRom(byte[] raw) throws java.io.IOException {
+        if (raw.length < 4 || raw[0] != 'P' || raw[1] != 'K') return raw;
+        try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(raw))) {
+            java.util.zip.ZipEntry e;
+            while ((e = z.getNextEntry()) != null) {
+                String n = e.getName().toLowerCase(java.util.Locale.ROOT);
+                if (e.isDirectory() || !(n.endsWith(".sfc") || n.endsWith(".smc"))) continue;
+                java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+                byte[] t = new byte[16384];
+                int k;
+                while ((k = z.read(t)) > 0) o.write(t, 0, k);
+                return o.toByteArray();
+            }
+        }
+        return raw;
     }
 }

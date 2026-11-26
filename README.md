@@ -42,22 +42,24 @@ Port nativo mejorado de **Wild Guns** (SNES, 1994, Natsume) escrito en C + SDL2 
 
 ## Cómo jugar (Usuario final)
 
-### Windows (`.exe`)
-1. Descarga `WildGuns-Windows-x64.zip` desde [Releases](../../releases) y descomprímelo.
-2. Ejecuta `WildGuns.exe`.
-3. En el primer arranque, selecciona tu copia legal `Wild Guns (USA).sfc` (o `.smc`) en el diálogo de Windows (también puedes arrastrar el archivo a la ventana o dejarlo junto al `.exe`).
+### Windows
+1. Descarga [WildGuns-Windows.zip](https://github.com/Vito2492/WildGuns/releases/latest/download/WildGuns-Windows.zip) y descomprímelo.
+2. Abre `WildGuns.exe`. La primera vez elige tu ROM `Wild Guns (USA).sfc` (`.sfc` o `.smc`), o déjala junto al `.exe`.
 
-### Linux (`.AppImage`)
-1. Descarga `WildGuns-x86_64.AppImage` desde [Releases](../../releases).
-2. Dale permisos de ejecución y ábrelo:
+### Linux
+1. Descarga [WildGuns-Linux.tar.gz](https://github.com/Vito2492/WildGuns/releases/latest/download/WildGuns-Linux.tar.gz).
+2. Descomprime y ejecuta (trae su propia copia de SDL2 en `lib/`):
    ```bash
-   chmod +x WildGuns-x86_64.AppImage
-   ./WildGuns-x86_64.AppImage
+   tar xzf WildGuns-Linux.tar.gz && cd WildGuns-Linux
+   ./wildguns "ruta/a/Wild Guns (USA).sfc"
    ```
 
-### Android (`.apk`)
-1. Descarga e instala `WildGuns-Android.apk` desde [Releases](../../releases).
-2. En el primer inicio elige tu `Wild Guns (USA).sfc` / `.smc` con el selector de Android (SAF).
+### Android
+1. Descarga e instala [WildGuns-Android.apk](https://github.com/Vito2492/WildGuns/releases/latest/download/WildGuns-Android.apk) desde el celular (hay que permitir instalar apps de origen desconocido).
+2. La primera vez te pide elegir tu ROM (`.sfc`, `.smc` o `.zip`); se valida y queda guardada dentro de la app.
+3. Las versiones nuevas se instalan encima y conservan las partidas. Juega con la pantalla táctil o con un mando Bluetooth/USB.
+
+> Ningún paquete incluye el juego: necesitas tu propia copia (versión USA).
 
 ---
 
@@ -83,9 +85,17 @@ Port nativo mejorado de **Wild Guns** (SNES, 1994, Natsume) escrito en C + SDL2 
 
 ## Compilación desde código fuente
 
-- **Windows (MSVC x64):** coloca `SDL2.dll` y `snes9x_libretro.dll` (x64) en la raíz y ejecuta `build_win.bat`.
-- **Linux:** `sudo apt install libsdl2-dev && make` (`make appimage` para empaquetar AppImage).
-- **CI automático:** [`.github/workflows/build.yml`](.github/workflows/build.yml) genera **Windows x64 ZIP**, **Linux AppImage** y **Android APK (arm64-v8a + armeabi-v7a)** automáticamente en cada `push` y crea una GitHub Release al subir un tag `v*`.
+- **Linux:** `sudo apt install libsdl2-dev && make` (pon `snes9x_libretro.so` junto al programa).
+- **Windows (MinGW, igual que el CI):**
+  ```bash
+  x86_64-w64-mingw32-gcc -O2 -Isrc -I$SDL/include/SDL2 -I$SDL/include src/wildguns.c -o WildGuns.exe \
+    -L$SDL/lib -lmingw32 -lSDL2main -lSDL2 -lcomdlg32 -luser32 -lshell32 -lm -mwindows
+  ```
+  (o `build_win.bat` con MSVC 2022). Junto al `.exe` van `SDL2.dll` y `snes9x_libretro.dll`.
+- **Android:** `tools/android-prepare.sh SDL2-2.30.9 snes9x/libretro/libs` y luego `cd android && gradle assembleRelease` (el workflow muestra los pasos completos).
+- **GitHub Actions:** [`.github/workflows/build.yml`](.github/workflows/build.yml) compila Windows, Linux y Android (arm64-v8a, armeabi-v7a, x86_64) en cada push a `main`, con SDL2 2.30.9 y snes9x compilado desde su código fuente, y publica o actualiza el release `v` + [`VERSION`](VERSION).
+- **Firma del APK:** con los secretos `ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` y `ANDROID_KEY_PASSWORD` el APK sale firmado siempre con la misma clave, así cada versión se instala encima de la anterior. Sin ellos se compila igual, pero el APK no se publica.
+
 
 ---
 

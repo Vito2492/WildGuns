@@ -1,56 +1,59 @@
-plugins {
-    id 'com.android.application'
-}
+// WildGuns for Android: SDL2 and the program are built by CMake into
+// libSDL2.so and libmain.so (jni/CMakeLists.txt); the snes9x core comes
+// prebuilt in jniLibs. tools/android-prepare.sh puts SDL and the core in place.
+apply plugin: 'com.android.application'
 
 android {
     namespace 'com.vito2492.wildguns'
     compileSdk 34
-
+    if (project.hasProperty('ndkVersion')) ndkVersion project.property('ndkVersion')
     defaultConfig {
         applicationId 'com.vito2492.wildguns'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
-        ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a'
-        }
+        versionCode Integer.parseInt((project.findProperty('versionCode') ?: '1').toString())
+        versionName((project.findProperty('versionName') ?: '1.0').toString())
         externalNativeBuild {
             cmake {
-                arguments '-DANDROID_STL=c++_shared'
+                arguments '-DANDROID_STL=c++_static'
+                abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
             }
         }
     }
-
+    // The release key comes from the environment (GitHub secrets). Without it
+    // the APK is signed with the debug key, which changes on every machine.
+    def ks = System.getenv('ANDROID_KEYSTORE')
     signingConfigs {
-        release {
-            if (System.getenv('KEYSTORE_FILE')) {
-                storeFile file(System.getenv('KEYSTORE_FILE'))
-                storePassword System.getenv('KEYSTORE_PASSWORD')
-                keyAlias System.getenv('KEY_ALIAS')
-                keyPassword System.getenv('KEY_PASSWORD')
+        if (ks && file(ks).exists()) {
+            release {
+                storeFile file(ks)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
             }
         }
     }
-
     buildTypes {
         release {
             minifyEnabled false
-            if (System.getenv('KEYSTORE_FILE')) {
+            if (ks && file(ks).exists()) {
                 signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
             }
         }
     }
-
+    packagingOptions {
+        jniLibs { useLegacyPackaging true }        // the core is opened by name with dlopen
+    }
     externalNativeBuild {
         cmake {
-            path 'src/main/CMakeLists.txt'
+            path 'jni/CMakeLists.txt'
+            version '3.22.1'
         }
     }
-
-    sourceSets {
-        main {
-            jniLibs.srcDirs = ['src/main/jniLibs']
-        }
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
     }
 }
