@@ -15,22 +15,34 @@ MODOS DE INICIO EN EL MENU:
   - INICIO RAPIDO 2P : Inicia cooperativo local para 2 jugadores.
   - MODO CLASICO     : Arranca desde el logo de Natsume, intro y
                        titulo original manteniendo tus trucos activos.
+  - MODO BOSS RUSH   : Salta directo al jefe de cada fase.
   - ELEGIR ESCENARIO : Ejecuta el codigo oficial de Natsume y abre
                        el Stage Select original (6 zonas).
   - MODO VERSUS      : Salta directo al modo V.S.
+  - COLOR TRAJE      : Elige los 4 trajes oficiales (Clasico, Verde,
+                       Morado, Rojo).
 
-APUNTADO CON RATON (PC) Y PANTALLA TACTIL (ANDROID):
-  - Mueve el raton sobre la ventana para apuntar la mira de P1 al
-    instante (activar/desactivar en OPCIONES -> MIRA RATON/TACTIL).
-  - Clic Izquierdo = Disparar | Clic Derecho = Saltar/Rodar
-    Clic Central   = Bomba
+MECANICAS EXCLUSIVAS Y TRUCOS:
+  - MODO TWIN-STICK  : Mueve a Clint/Annie con WASD o Stick Izq.
+                       mientras apuntas con Raton o Stick Der.!
+  - BULLET TIME      : Manten SHIFT (o L2 en mando) para camara
+                       lenta al 50% con audio ralentizado.
+  - REBOBINADO (4s)  : Manten BACKSPACE (o L1+Select) para retroceder.
+  - MIRA VISUAL      : Original, Laser Rojo o Cruceta Arcade.
+  - VULCAN INFINITA  : Furia V.GUN permanente (99 balas + invuln).
+  - FICHAS ARCADE    : Continues infinitos sin reiniciar fase.
+  - MODO HARDCORE    : 1-Hit Kill (0 vidas extra, 0 bombas, 0 cont.).
+  - SALTAR AL JEFE   : Pulsa F8 (o desde el menu de pausa).
 
-CONTROLES RAPIDOS (TECLADO):
-  Jugador 1: Flechas o WASD (mover) | Z (disparar) | X (saltar)
-             C (bomba) | A (accion) | Enter (Start)
-  Jugador 2: IJKL (mover) | N (disparar) | M (saltar) | H (bomba)
-             U (accion) | O (Start)
-  Menu del Port     : ESC o F1 (en mando: Guide o L1+R1+Start)
-  Guardar / Cargar  : F5 (guardar) | F7 (cargar) | F6 (cambiar slot)
-  Pantalla completa : F11 o Alt+Enter
+CONTROLES RAPIDOS:
+  Raton      : Mover=Apuntar | Izq=Disparar | Der=Saltar/Rodar
+               Centro=Bomba  | Lat1=Lazo    | Lat2=Esquive (Roll)
+  Jugador 1  : Flechas/WASD (mover) | Z (disparar) | X (saltar)
+               C (bomba) | V (lazo rapido) | Espacio (roll rapido)
+               Shift (Bullet Time) | Backspace (Rebobinar) | F8 (Jefe)
+  Jugador 2  : IJKL (mover) | N (disparar) | M (saltar) | H (bomba)
+               U (lazo) | O (Start)
+  Menu Port  : ESC o F1 (en mando: Guide o L1+R1+Start)
+  Save/Load  : F5 (guardar) | F7 (cargar) | F6 (cambiar slot)
+  Pantalla C.: F11
 ====================================================================

@@ -42,21 +42,29 @@
 /* Verified Wild Guns (USA) WRAM Addresses (7E:xxxx)                    */
 /* ------------------------------------------------------------------ */
 #define RAM_CAM_X       0x0090u  // Camera X scroll offset (16-bit LE)
-#define RAM_TIMER       0x0244u  // Stage countdown timer (seconds)
-#define RAM_P1_CROSS_X  0x1609u  // P1 Crosshair world X (screen_x + cam_x)
+#define RAM_SUBTIMER    0x0244u  // Stage frame sub-counter
+#define RAM_TIMER       0x0246u  // Stage countdown timer (BCD seconds, e.g. 0x80 = 80)
+#define RAM_P1_CHAR_X   0x1601u  // P1 Character world X (16-bit LE)
+#define RAM_P2_CHAR_X   0x1605u  // P2 Character world X (16-bit LE)
+#define RAM_P1_CROSS_X  0x1609u  // P1 Crosshair world X (16-bit LE, screen_x + cam_x)
+#define RAM_P2_CROSS_X  0x160Du  // P2 Crosshair world X (16-bit LE)
+#define RAM_P1_CHAR_Y   0x1701u  // P1 Character screen Y (~0xB6 on ground)
 #define RAM_P1_CROSS_Y  0x1709u  // P1 Crosshair screen Y
+#define RAM_P2_CROSS_Y  0x170Du  // P2 Crosshair screen Y
 #define RAM_P1_INVULN   0x1C82u  // P1 Invulnerability timer
 #define RAM_P2_INVULN   0x1C86u  // P2 Invulnerability timer
 #define RAM_P1_BOMBS    0x1FA0u  // P1 Bombs (0..5)
 #define RAM_P1_HUD_DIRTY 0x1FA2u // P1 HUD refresh flags (bit2=bombs, bit3=lives)
 #define RAM_P2_BOMBS    0x1FA4u  // P2 Bombs
-#define RAM_P2_HUD_DIRTY 0x1FA6u // P2 HUD refresh flags
-#define RAM_P1_WEAPON   0x1FA8u  // P1 Weapon ID (0=Norm, 4=S.Gun, 8=G.Gun, 12=M.Gun, 16=V.Gun)
+#define RAM_P2_HUD_DIRTY 0x1FA6u // P2 HUD refresh flags (non-zero when 2P active)
+#define RAM_P1_WEAPON   0x1FA8u  // P1 Weapon ID (0=Norm, 4=S.Gun, 8=G.Gun, 12=M.Gun, 16=P.Gun, 20=V.Gun)
 #define RAM_P2_WEAPON   0x1FACu  // P2 Weapon ID
-#define RAM_P1_AMMO     0x1FB0u  // P1 Special Weapon Ammo (BCD/count)
+#define RAM_P1_AMMO     0x1FB0u  // P1 Special Weapon Ammo (BCD, 0x99 = 99)
 #define RAM_P1_LIVES    0x1FB2u  // P1 Lives (0..9)
 #define RAM_P2_AMMO     0x1FB4u  // P2 Special Weapon Ammo
 #define RAM_P2_LIVES    0x1FB6u  // P2 Lives (0..9)
+#define RAM_P1_ALIVE    0x1FB8u  // P1 Active flag (0xFF alive, 0x00 game over)
+#define RAM_P2_ALIVE    0x1FBCu  // P2 Active flag
 
 /* ------------------------------------------------------------------ */
 /* Libretro Core                                                        */
@@ -88,6 +96,8 @@ static bool scripting;
 static bool vars_dirty;
 static SDL_AudioDeviceID audio;
 static bool mute;
+static bool bullet_time_active;
+static bool rewind_active;
 static char base_dir[1024];
 static char save_dir[1024];
 
@@ -148,7 +158,29 @@ static void video_cb(const void *data, unsigned w, unsigned h, size_t pitch)
 
 static size_t audio_batch_cb(const int16_t *d, size_t frames)
 {
-    if (audio && !mute) SDL_QueueAudio(audio, d, (Uint32)(frames * 4));
+    if (!audio || mute || rewind_active) return frames;
+    if (bullet_time_active) {
+        // 2x linear sample stretch for authentic deep Max Payne slow-motion audio!
+        int16_t stretched[2048];
+        size_t pos = 0;
+        while (pos < frames) {
+            size_t chunk = frames - pos;
+            if (chunk > 512) chunk = 512;
+            for (size_t i = 0; i < chunk; i++) {
+                int16_t l0 = d[(pos + i) * 2],     r0 = d[(pos + i) * 2 + 1];
+                int16_t l1 = (pos + i + 1 < frames) ? d[(pos + i + 1) * 2]     : l0;
+                int16_t r1 = (pos + i + 1 < frames) ? d[(pos + i + 1) * 2 + 1] : r0;
+                stretched[i * 4 + 0] = l0;
+                stretched[i * 4 + 1] = r0;
+                stretched[i * 4 + 2] = (int16_t)(((int)l0 + (int)l1) / 2);
+                stretched[i * 4 + 3] = (int16_t)(((int)r0 + (int)r1) / 2);
+            }
+            SDL_QueueAudio(audio, stretched, (Uint32)(chunk * 8));
+            pos += chunk;
+        }
+        return frames;
+    }
+    SDL_QueueAudio(audio, d, (Uint32)(frames * 4));
     return frames;
 }
 static void audio_cb(int16_t l, int16_t r) { int16_t s[2] = { l, r }; audio_batch_cb(s, 1); }
@@ -312,7 +344,12 @@ static const char *btn_en[12] = {
 
 typedef struct {
     int character;     // 0=Clint, 1=Annie (for Fast Start 1P)
+    int costume;       // 0=Classic, 1=Green(A), 2=Purple(X), 3=Red Outlaw(Y)
     int mouse_aim;     // 0=Off, 1=On (PC mouse / Android direct-touch aim!)
+    int twin_stick;    // 0=Off, 1=On (move while aiming/firing via WASD+Mouse / Dual Stick!)
+    int reticle;       // 0=Original, 1=Laser Red, 2=Arcade Tactical
+    int bullet_time;   // 0=Off, 1=On (hold Shift / L2 / BT button for 50% slow-mo)
+    int rewind;        // 0=Off, 1=On (hold Backspace / L1+Select / RW button to rewind ~4s)
     int autofire;      // 0=Off, 1=On
     int scale;         // 0=Pixel, 1=Smooth
     int fullscreen;    // 0/1
@@ -323,10 +360,13 @@ typedef struct {
     // Live cheats (apply to both P1 & P2 in co-op!)
     int c_god;         // Invulnerability
     int c_lives;       // Infinite Lives (9)
+    int c_continues;   // Infinite Arcade Credits (auto-revive +2 lives & 3 bombs on 0 lives)
     int c_bombs;       // Infinite Bombs (5)
     int c_ammo;        // Infinite Special Ammo
-    int c_weapon;      // 0=Original, 1=S.Gun, 2=G.Gun, 3=M.Gun, 4=V.Gun
-    int c_timer;       // Freeze Timer
+    int c_weapon;      // 0=Original, 1=S.Gun, 2=G.Gun, 3=M.Gun, 4=P.Gun, 5=V.Gun
+    int c_vulcan;      // Permanent Vulcan Fever (V.Gun + 99 ammo + invuln)
+    int c_hardcore;    // 1-Hit Kill Duel Mode (0 extra lives, 0 bombs, no continues)
+    int c_timer;       // Freeze Timer (BCD 0x80)
     int kb[12];
     int gp[12];
     char last_rom[1024];
@@ -339,7 +379,7 @@ static void default_controls(void)
     int dk[12] = {
         SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
         SDL_SCANCODE_Z,  SDL_SCANCODE_X,    SDL_SCANCODE_C,    SDL_SCANCODE_A,
-        SDL_SCANCODE_Q,  SDL_SCANCODE_W,    SDL_SCANCODE_RETURN, SDL_SCANCODE_RSHIFT
+        SDL_SCANCODE_Q,  SDL_SCANCODE_W,    SDL_SCANCODE_RETURN, SDL_SCANCODE_TAB
     };
     int dg[12] = {
         SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
@@ -358,7 +398,10 @@ static void cfg_path(char *out, size_t n) { snprintf(out, n, "%s%cwildguns.cfg",
 static void load_cfg(void)
 {
     memset(&cfg, 0, sizeof cfg);
-    cfg.mouse_aim = 1; // enabled by default for awesome PC/Android light-gun feel (toggleable!)
+    cfg.mouse_aim = 1;
+    cfg.twin_stick = 1;
+    cfg.bullet_time = 1;
+    cfg.rewind = 1;
     default_controls();
     char p[1024]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "r");
@@ -372,7 +415,12 @@ static void load_cfg(void)
         *eq++ = 0;
         int v = atoi(eq), idx;
         if (!strcmp(line, "character")) cfg.character = v & 1;
+        else if (!strcmp(line, "costume")) cfg.costume = v & 3;
         else if (!strcmp(line, "mouse_aim")) cfg.mouse_aim = v != 0;
+        else if (!strcmp(line, "twin_stick")) cfg.twin_stick = v != 0;
+        else if (!strcmp(line, "reticle")) cfg.reticle = v % 3;
+        else if (!strcmp(line, "bullet_time")) cfg.bullet_time = v != 0;
+        else if (!strcmp(line, "rewind")) cfg.rewind = v != 0;
         else if (!strcmp(line, "autofire")) cfg.autofire = v != 0;
         else if (!strcmp(line, "scale")) cfg.scale = v != 0;
         else if (!strcmp(line, "fullscreen")) cfg.fullscreen = v != 0;
@@ -382,9 +430,12 @@ static void load_cfg(void)
         else if (!strcmp(line, "slot")) cfg.slot = v % 3;
         else if (!strcmp(line, "c_god")) cfg.c_god = v != 0;
         else if (!strcmp(line, "c_lives")) cfg.c_lives = v != 0;
+        else if (!strcmp(line, "c_continues")) cfg.c_continues = v != 0;
         else if (!strcmp(line, "c_bombs")) cfg.c_bombs = v != 0;
         else if (!strcmp(line, "c_ammo")) cfg.c_ammo = v != 0;
-        else if (!strcmp(line, "c_weapon")) cfg.c_weapon = v % 5;
+        else if (!strcmp(line, "c_weapon")) cfg.c_weapon = v % 6;
+        else if (!strcmp(line, "c_vulcan")) cfg.c_vulcan = v != 0;
+        else if (!strcmp(line, "c_hardcore")) cfg.c_hardcore = v != 0;
         else if (!strcmp(line, "c_timer")) cfg.c_timer = v != 0;
         else if (!strcmp(line, "rom")) snprintf(cfg.last_rom, sizeof cfg.last_rom, "%s", eq);
         else if (sscanf(line, "kb%d", &idx) == 1 && idx >= 0 && idx < 12) cfg.kb[idx] = v;
@@ -399,10 +450,10 @@ static void save_cfg(void)
     char p[1024]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "w");
     if (!f) return;
-    fprintf(f, "character=%d\nmouse_aim=%d\nautofire=%d\nscale=%d\nfullscreen=%d\nnoslow=%d\ntouch=%d\nlang=%d\nslot=%d\n",
-            cfg.character, cfg.mouse_aim, cfg.autofire, cfg.scale, cfg.fullscreen, cfg.noslow, cfg.touch, cfg.lang, cfg.slot);
-    fprintf(f, "c_god=%d\nc_lives=%d\nc_bombs=%d\nc_ammo=%d\nc_weapon=%d\nc_timer=%d\n",
-            cfg.c_god, cfg.c_lives, cfg.c_bombs, cfg.c_ammo, cfg.c_weapon, cfg.c_timer);
+    fprintf(f, "character=%d\ncostume=%d\nmouse_aim=%d\ntwin_stick=%d\nreticle=%d\nbullet_time=%d\nrewind=%d\nautofire=%d\nscale=%d\nfullscreen=%d\nnoslow=%d\ntouch=%d\nlang=%d\nslot=%d\n",
+            cfg.character, cfg.costume, cfg.mouse_aim, cfg.twin_stick, cfg.reticle, cfg.bullet_time, cfg.rewind, cfg.autofire, cfg.scale, cfg.fullscreen, cfg.noslow, cfg.touch, cfg.lang, cfg.slot);
+    fprintf(f, "c_god=%d\nc_lives=%d\nc_continues=%d\nc_bombs=%d\nc_ammo=%d\nc_weapon=%d\nc_vulcan=%d\nc_hardcore=%d\nc_timer=%d\n",
+            cfg.c_god, cfg.c_lives, cfg.c_continues, cfg.c_bombs, cfg.c_ammo, cfg.c_weapon, cfg.c_vulcan, cfg.c_hardcore, cfg.c_timer);
     if (rom_path[0]) fprintf(f, "rom=%s\n", rom_path);
     for (int i = 0; i < 12; i++) fprintf(f, "kb%d=%d\ngp%d=%d\n", i, cfg.kb[i], i, cfg.gp[i]);
     fclose(f);
@@ -468,12 +519,54 @@ static uint8_t *title_snap;
 static size_t snap_size;
 static bool started;
 static bool classic_boot;
+static bool boss_rush_mode;
+static bool hardcore_was_alive;
 static uint32_t total_frames;
 
-// Live mouse/touch aim state (in 256x224 game coordinates)
+// Rewind ring buffer (~4 seconds at 1 snapshot every 4 frames = 60 slots)
+#define REWIND_SLOTS 60
+static uint8_t *rewind_buf[REWIND_SLOTS];
+static int rewind_head = 0, rewind_count = 0;
+
+static void rewind_clear(void) { rewind_head = 0; rewind_count = 0; }
+static void rewind_free(void)
+{
+    for (int i = 0; i < REWIND_SLOTS; i++) { free(rewind_buf[i]); rewind_buf[i] = NULL; }
+    rewind_clear();
+}
+static void rewind_push(void)
+{
+    if (!cfg.rewind || !snap_size || !started) return;
+    if (!rewind_buf[rewind_head]) rewind_buf[rewind_head] = (uint8_t *)malloc(snap_size);
+    if (!rewind_buf[rewind_head]) return;
+    if (core.serialize(rewind_buf[rewind_head], snap_size)) {
+        rewind_head = (rewind_head + 1) % REWIND_SLOTS;
+        if (rewind_count < REWIND_SLOTS) rewind_count++;
+    }
+}
+static bool rewind_pop(void)
+{
+    if (rewind_count <= 0 || !snap_size) return false;
+    rewind_head = (rewind_head + REWIND_SLOTS - 1) % REWIND_SLOTS;
+    rewind_count--;
+    if (!rewind_buf[rewind_head]) return false;
+    return core.unserialize(rewind_buf[rewind_head], snap_size);
+}
+
+// Live mouse/touch/twin-stick aim & action macro state (in 256x224 game coordinates)
 static bool aim_active;
 static int  aim_x = 128, aim_y = 96;
+static int  twin_move_dx = 0;
+static int  last_move_dir = 1; // +1 right, -1 left (for quick dodge macro)
 static bool mouse_fire_held, mouse_jump_held, mouse_bomb_pulse;
+static int  lasso_macro_frames = 0;
+static int  dodge_macro_frames = 0;
+static int  dodge_macro_dir = 1;
+static bool touch_bt_held = false;
+static bool touch_rw_held = false;
+
+static void show_toast(const char *msg);
+#define T(es, en) (cfg.lang == 1 ? (en) : (es))
 
 static void boot_and_cache_snapshots(void)
 {
@@ -488,7 +581,7 @@ static void boot_and_cache_snapshots(void)
     title_snap = (uint8_t *)malloc(snap_size);
     if (title_snap) core.serialize(title_snap, snap_size);
 
-    // Briefly enter OPTION MODE to extract the crisp 2bpp 8x8 Western font (VRAM 0xE100)
+    // Briefly enter OPTION MODE to extract the crisp 2bpp 8x16 Western font (VRAM 0xE200)
     tap1(RETRO_DEVICE_ID_JOYPAD_DOWN, 6, 18);
     tap1(RETRO_DEVICE_ID_JOYPAD_DOWN, 6, 18);
     tap1(RETRO_DEVICE_ID_JOYPAD_START, 8, 90);
@@ -505,9 +598,22 @@ static void boot_and_cache_snapshots(void)
 static bool in_live_action(const uint8_t *m)
 {
     if (!m) return false;
-    // During live gameplay: timer is active (>0 or bombs/lives initialized) and crosshair Y is in arena
-    return (m[RAM_TIMER] > 0 && m[RAM_TIMER] <= 99) ||
-           (m[RAM_P1_CROSS_Y] >= 12 && m[RAM_P1_CROSS_Y] <= 190 && (m[RAM_P1_LIVES] > 0 || m[RAM_P1_BOMBS] > 0));
+    // During live gameplay: BCD timer is active or crosshair Y is in arena with player active
+    return (m[RAM_TIMER] > 0 && m[RAM_TIMER] <= 0x99) ||
+           (m[RAM_P1_CROSS_Y] >= 12 && m[RAM_P1_CROSS_Y] <= 190 &&
+            (m[RAM_P1_ALIVE] == 0xFF || m[RAM_P1_LIVES] > 0 || m[RAM_P1_BOMBS] > 0));
+}
+
+static void trigger_skip_to_boss(void)
+{
+    uint8_t *m = wram();
+    if (!m || !started || !in_live_action(m)) return;
+    if (m[RAM_TIMER] > 1) {
+        m[RAM_TIMER] = 1;
+        show_toast(T("JEFE EN CAMINO!", "BOSS INCOMING!"));
+    } else {
+        show_toast(T("YA ESTAS EN EL JEFE", "ALREADY AT BOSS"));
+    }
 }
 
 static void apply_cheats_frame(void)
@@ -520,45 +626,95 @@ static void apply_cheats_frame(void)
     // Only modify P2 HUD/stats when Player 2 is actually active (0x1FA6 non-zero in 2P mode)
     bool p2_on = (m[RAM_P2_HUD_DIRTY] != 0);
 
-    if (cfg.c_god) {
-        if (m[RAM_P1_INVULN] < 0x30) m[RAM_P1_INVULN] = 0x40;
-        if (p2_on && m[RAM_P2_INVULN] < 0x30) m[RAM_P2_INVULN] = 0x40;
+    // Boss Rush Mode: automatically skip wave countdown straight to each area's Boss!
+    if (boss_rush_mode && in_live_action(m) && m[RAM_TIMER] > 2 && m[RAM_TIMER] <= 0x99) {
+        m[RAM_TIMER] = 1;
     }
-    if (cfg.c_lives) {
-        if (m[RAM_P1_LIVES] < 9) { m[RAM_P1_LIVES] = 9; m[RAM_P1_HUD_DIRTY] |= 0x08; }
-        if (p2_on && m[RAM_P2_LIVES] < 9) { m[RAM_P2_LIVES] = 9; m[RAM_P2_HUD_DIRTY] |= 0x08; }
+
+    if (cfg.c_hardcore) {
+        // 1-Hit Kill Duel Mode: 0 extra lives, 0 bombs, overrides survival cheats!
+        if (m[RAM_P1_LIVES] > 0) { m[RAM_P1_LIVES] = 0; m[RAM_P1_HUD_DIRTY] |= 0x08; }
+        if (m[RAM_P1_BOMBS] > 0) { m[RAM_P1_BOMBS] = 0; m[RAM_P1_HUD_DIRTY] |= 0x04; }
+        if (p2_on) {
+            if (m[RAM_P2_LIVES] > 0) { m[RAM_P2_LIVES] = 0; m[RAM_P2_HUD_DIRTY] |= 0x08; }
+            if (m[RAM_P2_BOMBS] > 0) { m[RAM_P2_BOMBS] = 0; m[RAM_P2_HUD_DIRTY] |= 0x04; }
+        }
+        if (m[RAM_P1_ALIVE] == 0xFF) hardcore_was_alive = true;
+    } else {
+        if (cfg.c_god || cfg.c_vulcan) {
+            if (m[RAM_P1_INVULN] < 0x30) m[RAM_P1_INVULN] = 0x40;
+            if (p2_on && m[RAM_P2_INVULN] < 0x30) m[RAM_P2_INVULN] = 0x40;
+        }
+        if (cfg.c_lives) {
+            if (m[RAM_P1_LIVES] < 9) { m[RAM_P1_LIVES] = 9; m[RAM_P1_HUD_DIRTY] |= 0x08; }
+            if (p2_on && m[RAM_P2_LIVES] < 9) { m[RAM_P2_LIVES] = 9; m[RAM_P2_HUD_DIRTY] |= 0x08; }
+        } else if (cfg.c_continues && in_live_action(m)) {
+            // Infinite Arcade Credits: lose lives normally (2 -> 1 -> 0), then auto-insert coin (+2 lives, +3 bombs)
+            if (m[RAM_P1_ALIVE] == 0xFF && m[RAM_P1_LIVES] == 0) {
+                m[RAM_P1_LIVES] = 2;
+                if (m[RAM_P1_BOMBS] < 3) m[RAM_P1_BOMBS] = 3;
+                m[RAM_P1_INVULN] = 0x50;
+                m[RAM_P1_HUD_DIRTY] |= 0x0C;
+                show_toast(T("FICHA ARCADE! +2 VIDAS", "ARCADE CREDIT! +2 LIVES"));
+            }
+            if (p2_on && m[RAM_P2_ALIVE] == 0xFF && m[RAM_P2_LIVES] == 0) {
+                m[RAM_P2_LIVES] = 2;
+                if (m[RAM_P2_BOMBS] < 3) m[RAM_P2_BOMBS] = 3;
+                m[RAM_P2_INVULN] = 0x50;
+                m[RAM_P2_HUD_DIRTY] |= 0x0C;
+                show_toast(T("FICHA 2P! +2 VIDAS", "2P CREDIT! +2 LIVES"));
+            }
+        }
+        if (cfg.c_bombs) {
+            if (m[RAM_P1_BOMBS] < 5) { m[RAM_P1_BOMBS] = 5; m[RAM_P1_HUD_DIRTY] |= 0x04; }
+            if (p2_on && m[RAM_P2_BOMBS] < 5) { m[RAM_P2_BOMBS] = 5; m[RAM_P2_HUD_DIRTY] |= 0x04; }
+        }
     }
-    if (cfg.c_bombs) {
-        if (m[RAM_P1_BOMBS] < 5) { m[RAM_P1_BOMBS] = 5; m[RAM_P1_HUD_DIRTY] |= 0x04; }
-        if (p2_on && m[RAM_P2_BOMBS] < 5) { m[RAM_P2_BOMBS] = 5; m[RAM_P2_HUD_DIRTY] |= 0x04; }
-    }
-    if (cfg.c_weapon > 0) {
-        // Verified weapon IDs: 4=S.Gun, 8=G.Gun, 12=M.Gun, 16=P.Gun
-        uint8_t wid = (uint8_t)(cfg.c_weapon * 4);
-        m[RAM_P1_WEAPON] = wid;
+
+    // Weapons: Permanent Vulcan Fever overrides weapon to V.GUN (0x14), else active weapon selector
+    int eff_weapon = (!cfg.c_hardcore && cfg.c_vulcan) ? 5 : cfg.c_weapon;
+    if (eff_weapon > 0) {
+        // Verified weapon IDs: 4=S.Gun, 8=G.Gun, 12=M.Gun, 16=P.Gun, 20(0x14)=V.Gun (Vulcan)
+        uint8_t wid = (uint8_t)(eff_weapon * 4);
+        if ((m[RAM_P1_WEAPON] & 0xFCu) != wid) m[RAM_P1_WEAPON] = wid;
         if (m[RAM_P1_AMMO] < 0x50) m[RAM_P1_AMMO] = 0x99;
         if (p2_on) {
-            m[RAM_P2_WEAPON] = wid;
+            if ((m[RAM_P2_WEAPON] & 0xFCu) != wid) m[RAM_P2_WEAPON] = wid;
             if (m[RAM_P2_AMMO] < 0x50) m[RAM_P2_AMMO] = 0x99;
         }
     } else if (cfg.c_ammo) {
-        if (m[RAM_P1_WEAPON] != 0 && m[RAM_P1_AMMO] < 0x50) m[RAM_P1_AMMO] = 0x99;
-        if (p2_on && m[RAM_P2_WEAPON] != 0 && m[RAM_P2_AMMO] < 0x50) m[RAM_P2_AMMO] = 0x99;
+        if ((m[RAM_P1_WEAPON] & 0xFCu) != 0 && m[RAM_P1_AMMO] < 0x50) m[RAM_P1_AMMO] = 0x99;
+        if (p2_on && (m[RAM_P2_WEAPON] & 0xFCu) != 0 && m[RAM_P2_AMMO] < 0x50) m[RAM_P2_AMMO] = 0x99;
     }
-    if (cfg.c_timer && m[RAM_TIMER] > 0 && m[RAM_TIMER] < 80) {
-        m[RAM_TIMER] = 80;
+
+    if (cfg.c_timer && !boss_rush_mode && m[RAM_TIMER] > 0 && m[RAM_TIMER] < 0x80) {
+        m[RAM_TIMER] = 0x80; // Freeze real BCD countdown timer at 80 seconds
     }
-    // Optional PC Mouse / Android Direct-Touch Crosshair Aiming for P1!
-    if (cfg.mouse_aim && aim_active && in_live_action(m)) {
+
+    // Twin-Stick strafing while aiming/firing + PC Mouse / Android Direct-Touch Crosshair Aiming
+    if (in_live_action(m)) {
         int cam_x = (int)(m[RAM_CAM_X] | (m[RAM_CAM_X + 1] << 8));
-        int wx = aim_x + cam_x;
-        if (wx < cam_x + 12) wx = cam_x + 12;
-        if (wx > cam_x + 244) wx = cam_x + 244;
-        int wy = aim_y;
-        if (wy < 14) wy = 14;
-        if (wy > 176) wy = 176;
-        m[RAM_P1_CROSS_X] = (uint8_t)(wx & 0xFF);
-        m[RAM_P1_CROSS_Y] = (uint8_t)(wy & 0xFF);
+        if (cfg.twin_stick && twin_move_dx != 0 && m[RAM_P1_CHAR_Y] >= 170) {
+            int cx = (int)(m[RAM_P1_CHAR_X] | (m[RAM_P1_CHAR_X + 1] << 8));
+            cx += twin_move_dx * 2;
+            int min_x = cam_x + 20, max_x = cam_x + 236;
+            if (min_x < 24) min_x = 24;
+            if (cx < min_x) cx = min_x;
+            if (cx > max_x) cx = max_x;
+            m[RAM_P1_CHAR_X]     = (uint8_t)(cx & 0xFF);
+            m[RAM_P1_CHAR_X + 1] = (uint8_t)((cx >> 8) & 0xFF);
+        }
+        if ((cfg.mouse_aim || cfg.twin_stick) && aim_active) {
+            int wx = aim_x + cam_x;
+            if (wx < cam_x + 12) wx = cam_x + 12;
+            if (wx > cam_x + 244) wx = cam_x + 244;
+            int wy = aim_y;
+            if (wy < 14) wy = 14;
+            if (wy > 176) wy = 176;
+            m[RAM_P1_CROSS_X]     = (uint8_t)(wx & 0xFF);
+            m[RAM_P1_CROSS_X + 1] = (uint8_t)((wx >> 8) & 0xFF);
+            m[RAM_P1_CROSS_Y]     = (uint8_t)(wy & 0xFF);
+        }
     }
 }
 
@@ -569,10 +725,13 @@ static void launch_classic_boot(void)
     core.reset();
     started = true;
     classic_boot = true;
+    boss_rush_mode = false;
+    hardcore_was_alive = false;
     aim_active = false;
+    rewind_clear();
 }
 
-static void launch_fast_game(bool two_players, bool stage_select)
+static void launch_fast_game(bool two_players, bool stage_select, bool boss_rush)
 {
     if (!title_snap) return;
     if (audio) SDL_ClearQueuedAudio(audio);
@@ -586,6 +745,12 @@ static void launch_fast_game(bool two_players, bool stage_select)
     if (!two_players && cfg.character == 1) {
         tap1(RETRO_DEVICE_ID_JOYPAD_RIGHT, 6, 20); // Select Annie
     }
+    // Official Wild Guns Costume Color selection on SELECT PLAYER:
+    // 0=Classic, 1=Green (A), 2=Purple (X), 3=Red Outlaw (Y)
+    if (cfg.costume == 1)      tap1(RETRO_DEVICE_ID_JOYPAD_A, 6, 18);
+    else if (cfg.costume == 2) tap1(RETRO_DEVICE_ID_JOYPAD_X, 6, 18);
+    else if (cfg.costume == 3) tap1(RETRO_DEVICE_ID_JOYPAD_Y, 6, 18);
+
     if (stage_select) {
         // Official Natsume Stage Select code: hold SELECT + AAAA BBBB ABABABAB
         static const uint16_t seq[16] = {
@@ -604,6 +769,10 @@ static void launch_fast_game(bool two_players, bool stage_select)
             step2(4, selb, 0);
         }
         step2(10, 0, 0);
+        // Re-apply costume if A/B presses changed it
+        if (cfg.costume == 1)      tap1(RETRO_DEVICE_ID_JOYPAD_A, 6, 12);
+        else if (cfg.costume == 2) tap1(RETRO_DEVICE_ID_JOYPAD_X, 6, 12);
+        else if (cfg.costume == 3) tap1(RETRO_DEVICE_ID_JOYPAD_Y, 6, 12);
         if (two_players) step2(8, 1u << RETRO_DEVICE_ID_JOYPAD_START, 1u << RETRO_DEVICE_ID_JOYPAD_START);
         else tap1(RETRO_DEVICE_ID_JOYPAD_START, 8, 0);
         step2(120, 0, 0); // Lands directly on the visual STAGE SELECT screen!
@@ -615,7 +784,10 @@ static void launch_fast_game(bool two_players, bool stage_select)
 
     started = true;
     classic_boot = false;
+    boss_rush_mode = boss_rush;
+    hardcore_was_alive = false;
     aim_active = false;
+    rewind_clear();
     apply_cheats_frame();
     scripting = false; vars_dirty = true; mute = false;
 }
@@ -632,7 +804,10 @@ static void launch_versus(void)
 
     started = true;
     classic_boot = true; // let user choose 1P vs COM or 1P vs 2P cleanly
+    boss_rush_mode = false;
+    hardcore_was_alive = false;
     aim_active = false;
+    rewind_clear();
     scripting = false; vars_dirty = true; mute = false;
 }
 
@@ -680,8 +855,6 @@ static void show_toast(const char *msg)
     snprintf(toast, sizeof toast, "%s", msg);
     toast_until = SDL_GetTicks() + 2200u;
 }
-
-#define T(es, en) (cfg.lang == 1 ? (en) : (es))
 
 static const uint32_t GOLD   = 0xFFFFD848u;
 static const uint32_t COPPER = 0xFFE88430u;
@@ -778,8 +951,20 @@ typedef struct { const char *label, *value, *value2; int id; } item_t;
 
 static const char *weapon_name(void)
 {
-    static const char *w[] = { "ORIGINAL", "S.GUN", "G.GUN", "M.GUN", "P.GUN" };
-    return w[cfg.c_weapon % 5];
+    static const char *w[] = { "ORIGINAL", "S.GUN", "G.GUN", "M.GUN", "P.GUN", "V.GUN" };
+    return w[cfg.c_weapon % 6];
+}
+static const char *costume_name(void)
+{
+    static const char *es[] = { "CLASICO", "VERDE", "MORADO", "ROJO" };
+    static const char *en[] = { "CLASSIC", "GREEN", "PURPLE", "RED" };
+    return cfg.lang ? en[cfg.costume & 3] : es[cfg.costume & 3];
+}
+static const char *reticle_name(void)
+{
+    static const char *es[] = { "ORIGINAL", "LASER", "ARCADE" };
+    static const char *en[] = { "ORIGINAL", "LASER", "ARCADE" };
+    return cfg.lang ? en[cfg.reticle % 3] : es[cfg.reticle % 3];
 }
 static const char *touch_name(void)
 {
@@ -798,9 +983,11 @@ static int build(item_t *it)
         it[n++] = (item_t){ T("INICIO RAPIDO 1P", "FAST START 1P"),  cfg.character ? "ANNIE" : "CLINT", NULL, 1 };
         it[n++] = (item_t){ T("INICIO RAPIDO 2P", "FAST START 2P"),  "CO-OP", NULL, 2 };
         it[n++] = (item_t){ T("MODO CLASICO",     "CLASSIC MODE"),   NULL, NULL, 3 };
-        it[n++] = (item_t){ T("ELEGIR ESCENARIO", "STAGE SELECT"),   "6 ZONAS", NULL, 4 };
+        it[n++] = (item_t){ T("MODO BOSS RUSH",   "BOSS RUSH MODE"), T("JEFES", "BOSSES"), NULL, 11 };
+        it[n++] = (item_t){ T("ELEGIR ESCENARIO", "STAGE SELECT"),   T("6 ZONAS", "6 ZONES"), NULL, 4 };
         it[n++] = (item_t){ T("MODO VERSUS",      "VERSUS MODE"),    "VS", NULL, 5 };
         it[n++] = (item_t){ T("PERSONAJE 1P",     "1P CHARACTER"),   cfg.character ? "ANNIE" : "CLINT", NULL, 6 };
+        it[n++] = (item_t){ T("COLOR TRAJE",      "COSTUME COLOR"),  costume_name(), NULL, 12 };
         it[n++] = (item_t){ T("ARSENAL Y TRUCOS", "WEAPONS & CHEATS"), NULL, NULL, 7 };
         it[n++] = (item_t){ T("OPCIONES",         "OPTIONS"),        NULL, NULL, 8 };
         it[n++] = (item_t){ T("CONTROLES",        "CONTROLS"),       NULL, NULL, 9 };
@@ -808,6 +995,7 @@ static int build(item_t *it)
     } else if (page == P_PAUSE) {
         snprintf(slot_buf, sizeof slot_buf, "SLOT %d", cfg.slot + 1);
         it[n++] = (item_t){ T("CONTINUAR",        "RESUME"),         NULL, NULL, 1 };
+        it[n++] = (item_t){ T("SALTAR AL JEFE",   "SKIP TO BOSS"),   "F8", NULL, 10 };
         it[n++] = (item_t){ T("GUARDAR ESTADO",   "SAVE STATE"),     slot_buf, NULL, 2 };
         it[n++] = (item_t){ T("CARGAR ESTADO",    "LOAD STATE"),     slot_buf, NULL, 3 };
         it[n++] = (item_t){ T("CAMBIAR SLOT",     "SWITCH SLOT"),    slot_buf, NULL, 4 };
@@ -818,18 +1006,25 @@ static int build(item_t *it)
         it[n++] = (item_t){ T("MENU INICIAL",     "TITLE MENU"),     NULL, NULL, 9 };
     } else if (page == P_CHEATS) {
         it[n++] = (item_t){ T("ARMA ACTIVA",      "ACTIVE WEAPON"),  weapon_name(), NULL, 1 };
-        it[n++] = (item_t){ T("MUNICION INFINITA","INFINITE AMMO"),  cfg.c_ammo   ? on_s : off_s, NULL, 2 };
-        it[n++] = (item_t){ T("BOMBAS INFINITAS", "INFINITE BOMBS"), cfg.c_bombs  ? on_s : off_s, NULL, 3 };
-        it[n++] = (item_t){ T("VIDAS INFINITAS",  "INFINITE LIVES"), cfg.c_lives  ? on_s : off_s, NULL, 4 };
-        it[n++] = (item_t){ T("MODO DIOS",        "GOD MODE"),       cfg.c_god    ? on_s : off_s, NULL, 5 };
-        it[n++] = (item_t){ T("RELOJ CONGELADO",  "FREEZE TIMER"),   cfg.c_timer  ? on_s : off_s, NULL, 6 };
-        it[n++] = (item_t){ T("DISPARO AUTO",     "AUTO FIRE"),      cfg.autofire ? on_s : off_s, NULL, 7 };
+        it[n++] = (item_t){ T("VULCAN INFINITA",  "INFINITE VULCAN"),cfg.c_vulcan    ? on_s : off_s, NULL, 8 };
+        it[n++] = (item_t){ T("MUNICION INFINITA","INFINITE AMMO"),  cfg.c_ammo      ? on_s : off_s, NULL, 2 };
+        it[n++] = (item_t){ T("BOMBAS INFINITAS", "INFINITE BOMBS"), cfg.c_bombs     ? on_s : off_s, NULL, 3 };
+        it[n++] = (item_t){ T("VIDAS INFINITAS",  "INFINITE LIVES"), cfg.c_lives     ? on_s : off_s, NULL, 4 };
+        it[n++] = (item_t){ T("FICHAS ARCADE",    "ARCADE CREDITS"), cfg.c_continues ? on_s : off_s, NULL, 9 };
+        it[n++] = (item_t){ T("MODO DIOS",        "GOD MODE"),       cfg.c_god       ? on_s : off_s, NULL, 5 };
+        it[n++] = (item_t){ T("MODO HARDCORE",    "HARDCORE 1-HIT"), cfg.c_hardcore  ? on_s : off_s, NULL, 10 };
+        it[n++] = (item_t){ T("RELOJ CONGELADO",  "FREEZE TIMER"),   cfg.c_timer     ? on_s : off_s, NULL, 6 };
+        it[n++] = (item_t){ T("DISPARO AUTO",     "AUTO FIRE"),      cfg.autofire    ? on_s : off_s, NULL, 7 };
         it[n++] = (item_t){ T("VOLVER",           "BACK"),           NULL, NULL, 99 };
     } else if (page == P_OPTIONS) {
-        it[n++] = (item_t){ T("MIRA RATON/TACTIL","MOUSE/TOUCH AIM"),cfg.mouse_aim  ? on_s : off_s, NULL, 1 };
+        it[n++] = (item_t){ T("MIRA RATON/TACTIL","MOUSE/TOUCH AIM"),cfg.mouse_aim   ? on_s : off_s, NULL, 1 };
+        it[n++] = (item_t){ T("MODO TWIN-STICK",  "TWIN-STICK MODE"),cfg.twin_stick  ? on_s : off_s, NULL, 8 };
+        it[n++] = (item_t){ T("MIRA VISUAL",      "CUSTOM RETICLE"), reticle_name(), NULL, 9 };
+        it[n++] = (item_t){ T("BULLET TIME",      "BULLET TIME"),    cfg.bullet_time ? on_s : off_s, NULL, 10 };
+        it[n++] = (item_t){ T("REBOBINADO",       "REWIND 4S"),      cfg.rewind      ? on_s : off_s, NULL, 11 };
         it[n++] = (item_t){ T("FILTRO VIDEO",     "VIDEO FILTER"),   cfg.scale ? T("SUAVE", "SMOOTH") : "PIXEL", NULL, 2 };
-        it[n++] = (item_t){ T("PANTALLA COMP",    "FULLSCREEN"),     cfg.fullscreen ? on_s : off_s, NULL, 3 };
-        it[n++] = (item_t){ T("SIN SLOWDOWN",     "NO SLOWDOWN"),    cfg.noslow     ? on_s : off_s, NULL, 4 };
+        it[n++] = (item_t){ T("PANTALLA COMP",    "FULLSCREEN"),     cfg.fullscreen  ? on_s : off_s, NULL, 3 };
+        it[n++] = (item_t){ T("SIN SLOWDOWN",     "NO SLOWDOWN"),    cfg.noslow      ? on_s : off_s, NULL, 4 };
         it[n++] = (item_t){ T("TACTIL ANDROID",   "TOUCH PAD"),      touch_name(), NULL, 5 };
         it[n++] = (item_t){ T("IDIOMA",           "LANGUAGE"),       cfg.lang ? "ENGLISH" : "ESPANOL", NULL, 6 };
         it[n++] = (item_t){ T("CAMBIAR ROM",      "CHANGE ROM"),     NULL, NULL, 7 };
@@ -889,18 +1084,21 @@ static void activate(void)
     int id = it[sel].id;
 
     if (page == P_START) {
-        if (id == 1)      { launch_fast_game(false, false); state = ST_PLAY; }
-        else if (id == 2) { launch_fast_game(true,  false); state = ST_PLAY; }
-        else if (id == 3) { launch_classic_boot();          state = ST_PLAY; }
-        else if (id == 4) { launch_fast_game(false, true);  state = ST_PLAY; }
-        else if (id == 5) { launch_versus();                state = ST_PLAY; }
+        if (id == 1)      { launch_fast_game(false, false, false); state = ST_PLAY; }
+        else if (id == 2) { launch_fast_game(true,  false, false); state = ST_PLAY; }
+        else if (id == 3) { launch_classic_boot();                 state = ST_PLAY; }
+        else if (id == 11){ launch_fast_game(false, false, true);  state = ST_PLAY; show_toast(T("MODO BOSS RUSH!", "BOSS RUSH MODE!")); }
+        else if (id == 4) { launch_fast_game(false, true,  false); state = ST_PLAY; }
+        else if (id == 5) { launch_versus();                       state = ST_PLAY; }
         else if (id == 6) { cfg.character ^= 1; save_cfg(); }
+        else if (id == 12){ cfg.costume = (cfg.costume + 1) & 3; save_cfg(); }
         else if (id == 7) { page = P_CHEATS; sel = 0; }
         else if (id == 8) { page = P_OPTIONS; sel = 0; }
         else if (id == 9) { page = P_CONTROLS; sel = 0; }
         else if (id == 10){ running = false; }
     } else if (page == P_PAUSE) {
         if (id == 1) state = ST_PLAY;
+        else if (id == 10){ trigger_skip_to_boss(); state = ST_PLAY; }
         else if (id == 2) show_toast(save_state(cfg.slot) ? T("ESTADO GUARDADO", "STATE SAVED") : T("ERROR", "ERROR"));
         else if (id == 3) {
             if (load_state(cfg.slot)) { state = ST_PLAY; show_toast(T("ESTADO CARGADO", "STATE LOADED")); }
@@ -908,17 +1106,23 @@ static void activate(void)
         }
         else if (id == 4) { cfg.slot = (cfg.slot + 1) % 3; save_cfg(); }
         else if (id == 5) { page = P_CHEATS; sel = 0; }
-        else if (id == 6) { launch_fast_game(false, true); state = ST_PLAY; }
+        else if (id == 6) { launch_fast_game(false, true, false); state = ST_PLAY; }
         else if (id == 7) { page = P_OPTIONS; sel = 0; }
         else if (id == 8) { page = P_CONTROLS; sel = 0; }
-        else if (id == 9) { started = false; page = P_START; sel = 0; }
+        else if (id == 9) { started = false; boss_rush_mode = false; page = P_START; sel = 0; }
     } else if (page == P_CHEATS) {
         if (id == 99) back();
-        else if (id == 1) cfg.c_weapon = (cfg.c_weapon + 1) % 5;
+        else if (id == 1) cfg.c_weapon = (cfg.c_weapon + 1) % 6;
+        else if (id == 8) { cfg.c_vulcan = !cfg.c_vulcan; if (cfg.c_vulcan) cfg.c_hardcore = 0; }
         else if (id == 2) cfg.c_ammo = !cfg.c_ammo;
-        else if (id == 3) cfg.c_bombs = !cfg.c_bombs;
-        else if (id == 4) cfg.c_lives = !cfg.c_lives;
-        else if (id == 5) cfg.c_god = !cfg.c_god;
+        else if (id == 3) { cfg.c_bombs = !cfg.c_bombs; if (cfg.c_bombs) cfg.c_hardcore = 0; }
+        else if (id == 4) { cfg.c_lives = !cfg.c_lives; if (cfg.c_lives) cfg.c_hardcore = 0; }
+        else if (id == 9) { cfg.c_continues = !cfg.c_continues; if (cfg.c_continues) cfg.c_hardcore = 0; }
+        else if (id == 5) { cfg.c_god = !cfg.c_god; if (cfg.c_god) cfg.c_hardcore = 0; }
+        else if (id == 10){
+            cfg.c_hardcore = !cfg.c_hardcore;
+            if (cfg.c_hardcore) { cfg.c_god = 0; cfg.c_lives = 0; cfg.c_bombs = 0; cfg.c_continues = 0; cfg.c_vulcan = 0; }
+        }
         else if (id == 6) cfg.c_timer = !cfg.c_timer;
         else if (id == 7) cfg.autofire = !cfg.autofire;
         apply_cheats_frame();
@@ -926,6 +1130,10 @@ static void activate(void)
     } else if (page == P_OPTIONS) {
         if (id == 99) back();
         else if (id == 1) cfg.mouse_aim = !cfg.mouse_aim;
+        else if (id == 8) cfg.twin_stick = !cfg.twin_stick;
+        else if (id == 9) cfg.reticle = (cfg.reticle + 1) % 3;
+        else if (id == 10) cfg.bullet_time = !cfg.bullet_time;
+        else if (id == 11) { cfg.rewind = !cfg.rewind; if (!cfg.rewind) rewind_clear(); }
         else if (id == 2) { cfg.scale = !cfg.scale; apply_video_settings(); }
         else if (id == 3) { cfg.fullscreen = !cfg.fullscreen; apply_video_settings(); }
         else if (id == 4) { cfg.noslow = !cfg.noslow; overclock = cfg.noslow != 0; vars_dirty = true; }
@@ -938,7 +1146,8 @@ static void activate(void)
                     struct retro_game_info gi = { rom_path, rom_buf, rom_len, NULL };
                     core.load_game(&gi);
                     boot_and_cache_snapshots();
-                    started = false; page = P_START; sel = 0; save_cfg();
+                    started = false; boss_rush_mode = false; rewind_clear();
+                    page = P_START; sel = 0; save_cfg();
                     show_toast(T("ROM CARGADA!", "ROM LOADED!"));
                 } else show_toast(err);
             }
@@ -974,11 +1183,11 @@ static void draw_menu(void)
 
     item_t it[24];
     int n = build(it);
-    int x = 28, y0 = 38, step_y = 15, vx = 236, rows = n, first = 0;
-    if (page == P_START)    { step_y = 15; y0 = 38; }
-    if (page == P_PAUSE)    { step_y = 16; y0 = 38; }
-    if (page == P_CHEATS)   { step_y = 18; y0 = 42; }
-    if (page == P_OPTIONS)  { step_y = 18; y0 = 42; }
+    int x = 28, y0 = 35, step_y = 13, vx = 236, rows = n, first = 0;
+    if (page == P_START)    { step_y = 13; y0 = 35; }
+    if (page == P_PAUSE)    { step_y = 15; y0 = 36; }
+    if (page == P_CHEATS)   { step_y = 14; y0 = 35; }
+    if (page == P_OPTIONS)  { step_y = 13; y0 = 35; }
     if (page == P_CONTROLS) {
         x = 22; vx = 176; step_y = 13; y0 = 46; rows = 10;
         first = sel - rows / 2;
@@ -1007,12 +1216,13 @@ static void draw_menu(void)
     }
 
     const char *foot = "";
-    if (page == P_START)       foot = T("ESC/F1: PAUSA  RATON: APUNTAR", "ESC/F1: PAUSE  MOUSE: AIM");
+    if (page == P_START)       foot = T("ESC:PAUSA SHIFT:SLOW BKSP:REW", "ESC:PAUSE SHIFT:SLOW BKSP:REW");
+    else if (page == P_PAUSE)  foot = T("F8:JEFE  V:LAZO  ESPACIO:ROLL", "F8:BOSS  V:LASSO  SPACE:ROLL");
     else if (page == P_CHEATS) foot = T("APLICAN A 1P Y 2P EN VIVO", "APPLIES TO 1P & 2P LIVE");
-    else if (page == P_OPTIONS)foot = T("CLIC IZQ: DISPARO  DER: SALTO", "L-CLICK: FIRE  R-CLICK: ROLL");
+    else if (page == P_OPTIONS)foot = T("WASD+RATON O 2 STICKS: TWIN", "WASD+MOUSE OR 2 STICKS: TWIN");
     else if (page == P_CONTROLS) foot = binding >= 0 ? T("PULSA TECLA O BOTON...", "PRESS KEY OR BUTTON...")
                                                      : T("ENTER: TECLA  IZQ/DER: MANDO", "ENTER: KEY  L/R: PAD");
-    if (*foot) text_c(196, foot, DIM);
+    if (*foot) text_c(197, foot, DIM);
 }
 
 static void draw_toast(void)
@@ -1021,6 +1231,82 @@ static void draw_toast(void)
     int tw = (int)strlen(toast) * 8 + 14;
     draw_box((W - tw) / 2, 4, tw, 15, 0xEC24120Au, GOLD);
     text_c(7, toast, GOLD);
+}
+
+static void draw_reticle_at(int cx, int cy, int style, bool is_p2)
+{
+    if (cx < 4 || cx >= W - 4 || cy < 4 || cy >= H - 28) return;
+    if (style == 1) {
+        // LASER ROJO: high-visibility crimson laser crosshair + crisp white center dot
+        uint32_t col = is_p2 ? 0xFF30FF68u : 0xFFFF2828u;
+        uint32_t glow = is_p2 ? 0x9010B040u : 0x90D01010u;
+        fill_rect(cx - 11, cy - 1, 8, 3, glow);
+        fill_rect(cx + 4,  cy - 1, 8, 3, glow);
+        fill_rect(cx - 1, cy - 11, 3, 8, glow);
+        fill_rect(cx - 1, cy + 4,  3, 8, glow);
+        fill_rect(cx - 11, cy, 8, 1, col);
+        fill_rect(cx + 4,  cy, 8, 1, col);
+        fill_rect(cx, cy - 11, 1, 8, col);
+        fill_rect(cx, cy + 4,  1, 8, col);
+        fill_rect(cx - 1, cy - 1, 3, 3, 0xFFFFFFFFu);
+        put_px(cx, cy, col);
+    } else if (style == 2) {
+        // ARCADE (Time Crisis style): bright cyan/gold tactical brackets + target pip
+        uint32_t col = is_p2 ? GREEN : CYAN;
+        uint32_t acc = GOLD;
+        // Corner brackets (11px radius)
+        fill_rect(cx - 11, cy - 11, 5, 2, col); fill_rect(cx - 11, cy - 11, 2, 5, col);
+        fill_rect(cx + 7,  cy - 11, 5, 2, col); fill_rect(cx + 10, cy - 11, 2, 5, col);
+        fill_rect(cx - 11, cy + 10, 5, 2, col); fill_rect(cx - 11, cy + 7,  2, 5, col);
+        fill_rect(cx + 7,  cy + 10, 5, 2, col); fill_rect(cx + 10, cy + 7,  2, 5, col);
+        // Inner gold ticks + center dot
+        fill_rect(cx - 6, cy, 3, 1, acc); fill_rect(cx + 4, cy, 3, 1, acc);
+        fill_rect(cx, cy - 6, 1, 3, acc); fill_rect(cx, cy + 4, 1, 3, acc);
+        fill_rect(cx - 1, cy - 1, 3, 3, 0xFFFF3838u);
+        put_px(cx, cy, 0xFFFFFFFFu);
+    }
+}
+
+static bool draw_gameplay_hud_overlay(void)
+{
+    bool any = false;
+    uint8_t *m = wram();
+    bool live = (started && m && in_live_action(m));
+    bool need_ret = (live && cfg.reticle > 0);
+    if (!need_ret && !bullet_time_active && !rewind_active && !*toast) return false;
+
+    memset(ui, 0, sizeof ui);
+    if (bullet_time_active) {
+        // Subtle cinematic cyan frame + badge
+        fill_rect(0, 0, W, 3, 0xC040D8FFu);
+        fill_rect(0, H - 3, W, 3, 0xC040D8FFu);
+        fill_rect(0, 0, 3, H, 0xC040D8FFu);
+        fill_rect(W - 3, 0, 3, H, 0xC040D8FFu);
+        draw_box(76, 4, 104, 14, 0xD80A2034u, CYAN);
+        text_c(6, "BULLET TIME", CYAN);
+        any = true;
+    }
+    if (rewind_active) {
+        fill_rect(0, 0, W, 3, 0xD0FFD040u);
+        fill_rect(0, H - 3, W, 3, 0xD0FFD040u);
+        draw_box(74, 4, 108, 14, 0xDC2A1808u, GOLD);
+        text_c(6, T("<< REBOBINAR", "<< REWIND"), GOLD);
+        any = true;
+    }
+    if (need_ret) {
+        int cam_x = (int)(m[RAM_CAM_X] | (m[RAM_CAM_X + 1] << 8));
+        int p1x = (int)(m[RAM_P1_CROSS_X] | (m[RAM_P1_CROSS_X + 1] << 8)) - cam_x;
+        int p1y = (int)m[RAM_P1_CROSS_Y];
+        draw_reticle_at(p1x, p1y, cfg.reticle, false);
+        if (m[RAM_P2_HUD_DIRTY] != 0) {
+            int p2x = (int)(m[RAM_P2_CROSS_X] | (m[RAM_P2_CROSS_X + 1] << 8)) - cam_x;
+            int p2y = (int)m[RAM_P2_CROSS_Y];
+            draw_reticle_at(p2x, p2y, cfg.reticle, true);
+        }
+        any = true;
+    }
+    if (*toast) { draw_toast(); any = true; }
+    return any;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1047,15 +1333,15 @@ typedef struct {
     uint8_t r, g, b;
 } tbtn_t;
 
-enum { TACT_MENU = -1, TACT_SAVE = -2, TACT_LOAD = -3 };
+enum { TACT_MENU = -1, TACT_SAVE = -2, TACT_LOAD = -3, TACT_BT = -4, TACT_RW = -5, TACT_LASSO = -6, TACT_DODGE = -7 };
 
 static const tbtn_t touch_btns[] = {
     { 0.805f, 0.675f, 0.048f, 0.082f, RETRO_DEVICE_ID_JOYPAD_Y,      "FIRE", 240,  75,  45 },
-    { 0.865f, 0.785f, 0.048f, 0.082f, RETRO_DEVICE_ID_JOYPAD_B,      "ROLL", 240, 195,  45 },
-    { 0.925f, 0.675f, 0.048f, 0.082f, RETRO_DEVICE_ID_JOYPAD_A,      "LASO",  65, 195,  95 },
+    { 0.865f, 0.785f, 0.048f, 0.082f, TACT_DODGE,                    "ROLL", 240, 195,  45 },
+    { 0.925f, 0.675f, 0.048f, 0.082f, TACT_LASSO,                    "LASO",  65, 195,  95 },
     { 0.865f, 0.565f, 0.048f, 0.082f, RETRO_DEVICE_ID_JOYPAD_X,      "BOMB", 160,  80, 240 },
-    { 0.085f, 0.365f, 0.062f, 0.052f, RETRO_DEVICE_ID_JOYPAD_L,      "L",    185, 195, 220 },
-    { 0.915f, 0.365f, 0.062f, 0.052f, RETRO_DEVICE_ID_JOYPAD_R,      "R",    185, 195, 220 },
+    { 0.085f, 0.365f, 0.062f, 0.052f, TACT_BT,                       "SLOW",  70, 200, 250 },
+    { 0.915f, 0.365f, 0.062f, 0.052f, TACT_RW,                       "REW",  245, 180,  55 },
     { 0.145f, 0.925f, 0.058f, 0.042f, RETRO_DEVICE_ID_JOYPAD_SELECT, "SEL",  155, 165, 190 },
     { 0.855f, 0.925f, 0.058f, 0.042f, RETRO_DEVICE_ID_JOYPAD_START,  "STRT", 155, 165, 190 },
     { 0.080f, 0.068f, 0.065f, 0.048f, TACT_MENU,                     "MENU", 245, 205,  60 },
@@ -1111,6 +1397,8 @@ static void update_aim_from_norm(float nx, float ny)
 static uint16_t read_touch_pad(void)
 {
     uint16_t b = 0;
+    touch_bt_held = false;
+    touch_rw_held = false;
     bool pad_vis = touch_pad_visible();
     for (int f = 0; f < MAX_FINGERS; f++) {
         if (!fingers[f].down) continue;
@@ -1133,10 +1421,18 @@ static uint16_t read_touch_pad(void)
         }
         for (int i = 0; i < NTOUCH_BTNS; i++) {
             const tbtn_t *tb = &touch_btns[i];
-            if (tb->btn < 0) continue;
             if (fx >= tb->cx - tb->hw && fx <= tb->cx + tb->hw &&
-                fy >= tb->cy - tb->hh && fy <= tb->cy + tb->hh)
-                b |= (uint16_t)(1u << tb->btn);
+                fy >= tb->cy - tb->hh && fy <= tb->cy + tb->hh) {
+                if (tb->btn >= 0) b |= (uint16_t)(1u << tb->btn);
+                else if (tb->btn == TACT_BT) touch_bt_held = true;
+                else if (tb->btn == TACT_RW) touch_rw_held = true;
+                else if (tb->btn == TACT_LASSO && lasso_macro_frames == 0) lasso_macro_frames = 7;
+                else if (tb->btn == TACT_DODGE && dodge_macro_frames == 0) {
+                    dodge_macro_frames = 10;
+                    dodge_macro_dir = (b & (1u << RETRO_DEVICE_ID_JOYPAD_LEFT)) ? -1 :
+                                      (b & (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT)) ? 1 : last_move_dir;
+                }
+            }
         }
     }
     return b;
@@ -1163,11 +1459,18 @@ static void read_both_pads(void)
 {
     const Uint8 *k = SDL_GetKeyboardState(NULL);
     uint16_t p0 = read_touch_pad(), p1 = 0;
+    twin_move_dx = 0;
 
-    // P1 Keyboard
+    // P1 Keyboard + WASD movement support for Twin-Stick PC play!
     for (int i = 0; i < 12; i++)
         if (cfg.kb[i] > 0 && cfg.kb[i] < SDL_NUM_SCANCODES && k[cfg.kb[i]])
             p0 |= (uint16_t)(1u << snes_btn[i]);
+    if (cfg.twin_stick) {
+        if (k[SDL_SCANCODE_A]) p0 |= 1u << RETRO_DEVICE_ID_JOYPAD_LEFT;
+        if (k[SDL_SCANCODE_D]) p0 |= 1u << RETRO_DEVICE_ID_JOYPAD_RIGHT;
+        if (k[SDL_SCANCODE_W]) p0 |= 1u << RETRO_DEVICE_ID_JOYPAD_UP;
+        if (k[SDL_SCANCODE_S]) p0 |= 1u << RETRO_DEVICE_ID_JOYPAD_DOWN;
+    }
 
     // P1 Mouse buttons (when Mouse Aim is enabled)
     if (cfg.mouse_aim) {
@@ -1187,28 +1490,76 @@ static void read_both_pads(void)
     if (k[SDL_SCANCODE_U]) p1 |= 1u << RETRO_DEVICE_ID_JOYPAD_A;
     if (k[SDL_SCANCODE_O]) p1 |= 1u << RETRO_DEVICE_ID_JOYPAD_START;
 
-    // Gamepads: Pad 0 -> P1, Pad 1 -> P2
+    // Gamepads: Pad 0 -> P1 (plus Right Stick Twin-Stick aiming, L2 Bullet Time, L1+Back Rewind, R1 Lasso), Pad 1 -> P2
+    bool pad_bt = false, pad_rw = false;
     int found = 0;
     for (int i = 0; i < 4; i++) {
         if (!pads[i]) continue;
         uint16_t gb = read_controller(pads[i]);
-        if (found == 0) p0 |= gb;
-        else if (found == 1) p1 |= gb;
+        if (found == 0) {
+            p0 |= gb;
+            if (cfg.twin_stick) {
+                Sint16 rx = SDL_GameControllerGetAxis(pads[i], SDL_CONTROLLER_AXIS_RIGHTX);
+                Sint16 ry = SDL_GameControllerGetAxis(pads[i], SDL_CONTROLLER_AXIS_RIGHTY);
+                if (rx < -8000 || rx > 8000 || ry < -8000 || ry > 8000) {
+                    aim_active = true;
+                    aim_x += rx / 9000;
+                    aim_y += ry / 9000;
+                    if (aim_x < 12) aim_x = 12;
+                    if (aim_x > 244) aim_x = 244;
+                    if (aim_y < 14) aim_y = 14;
+                    if (aim_y > 176) aim_y = 176;
+                    pad_active_recently = true; last_pad_tick = SDL_GetTicks();
+                }
+                if (SDL_GameControllerGetAxis(pads[i], SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000)
+                    p0 |= 1u << RETRO_DEVICE_ID_JOYPAD_Y; // R2 = Fire!
+            }
+            if (SDL_GameControllerGetAxis(pads[i], SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000) pad_bt = true;
+            if (SDL_GameControllerGetButton(pads[i], SDL_CONTROLLER_BUTTON_LEFTSHOULDER) &&
+                SDL_GameControllerGetButton(pads[i], SDL_CONTROLLER_BUTTON_BACK)) pad_rw = true;
+        } else if (found == 1) {
+            p1 |= gb;
+        }
         found++;
     }
 
-    // Auto-fire turbo pulsing on Y when held
-    if (cfg.autofire) {
+    // Bullet Time (Shift / L2 / Touch SLOW) & Rewind (Backspace / L1+Select / Touch REW)
+    bullet_time_active = (cfg.bullet_time != 0) && (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT] || pad_bt || touch_bt_held);
+    rewind_active      = (cfg.rewind != 0) && (k[SDL_SCANCODE_BACKSPACE] || pad_rw || touch_rw_held);
+
+    // Track last horizontal direction for quick dodge macro
+    if (p0 & (1u << RETRO_DEVICE_ID_JOYPAD_LEFT))       last_move_dir = -1;
+    else if (p0 & (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT)) last_move_dir = 1;
+
+    // Quick Action Macros: Instant Lasso (3f crisp Y tap + 4f release) & Quick Dodge Roll (B + Dir)
+    if (lasso_macro_frames > 0) {
+        if (lasso_macro_frames > 4) p0 |= (1u << RETRO_DEVICE_ID_JOYPAD_Y);
+        else                        p0 &= (uint16_t)~(1u << RETRO_DEVICE_ID_JOYPAD_Y);
+        lasso_macro_frames--;
+    }
+    if (dodge_macro_frames > 0) {
+        p0 |= (1u << RETRO_DEVICE_ID_JOYPAD_B);
+        p0 &= (uint16_t)~((1u << RETRO_DEVICE_ID_JOYPAD_LEFT) | (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT));
+        p0 |= (uint16_t)(1u << (dodge_macro_dir < 0 ? RETRO_DEVICE_ID_JOYPAD_LEFT : RETRO_DEVICE_ID_JOYPAD_RIGHT));
+        dodge_macro_frames--;
+    }
+
+    // Auto-fire turbo pulsing on Y when held (skipped during lasso macro)
+    if (cfg.autofire && lasso_macro_frames == 0) {
         if ((p0 & (1u << RETRO_DEVICE_ID_JOYPAD_Y)) && (total_frames & 2))
             p0 &= (uint16_t)~(1u << RETRO_DEVICE_ID_JOYPAD_Y);
         if ((p1 & (1u << RETRO_DEVICE_ID_JOYPAD_Y)) && (total_frames & 2))
             p1 &= (uint16_t)~(1u << RETRO_DEVICE_ID_JOYPAD_Y);
     }
 
-    // If user uses keyboard/pad D-Pad while NOT firing with mouse, release mouse override cleanly
-    if (!mouse_fire_held && (p0 & ((1u << RETRO_DEVICE_ID_JOYPAD_UP) | (1u << RETRO_DEVICE_ID_JOYPAD_DOWN) |
-                                   (1u << RETRO_DEVICE_ID_JOYPAD_LEFT) | (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT)))) {
-        // Keep aim_active only when mouse moves or fires
+    // Twin-Stick Mode: allow walking left/right via WRAM while firing & aiming independently!
+    if (cfg.twin_stick && aim_active && (p0 & (1u << RETRO_DEVICE_ID_JOYPAD_Y)) &&
+        !(p0 & (1u << RETRO_DEVICE_ID_JOYPAD_B))) {
+        if (p0 & (1u << RETRO_DEVICE_ID_JOYPAD_LEFT))  twin_move_dx = -1;
+        if (p0 & (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT)) twin_move_dx = 1;
+        // Strip D-pad from SNES joypad while firing so SNES doesn't fight our independent aim!
+        p0 &= (uint16_t)~((1u << RETRO_DEVICE_ID_JOYPAD_UP) | (1u << RETRO_DEVICE_ID_JOYPAD_DOWN) |
+                          (1u << RETRO_DEVICE_ID_JOYPAD_LEFT) | (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT));
     }
 
     pad[0] = p0;
@@ -1336,13 +1687,18 @@ static void draw_touch_overlay(int rw, int rh)
     }
     for (int i = 0; i < NTOUCH_BTNS; i++) {
         const tbtn_t *tb = &touch_btns[i];
-        if (tb->btn >= 0 && !show_pad) continue;
-        if (tb->btn < 0 && !show_pill) continue;
+        bool is_top_pill = (tb->btn == TACT_MENU || tb->btn == TACT_SAVE || tb->btn == TACT_LOAD);
+        if (!is_top_pill && !show_pad) continue;
+        if (is_top_pill && !show_pill) continue;
         SDL_Rect rc = {
             (int)((tb->cx - tb->hw) * rw), (int)((tb->cy - tb->hh) * rh),
             (int)(tb->hw * 2 * rw),        (int)(tb->hh * 2 * rh)
         };
-        bool pressed = (tb->btn >= 0) && ((pad[0] >> tb->btn) & 1);
+        bool pressed = (tb->btn >= 0 && ((pad[0] >> tb->btn) & 1)) ||
+                       (tb->btn == TACT_BT && touch_bt_held) ||
+                       (tb->btn == TACT_RW && touch_rw_held) ||
+                       (tb->btn == TACT_LASSO && lasso_macro_frames > 0) ||
+                       (tb->btn == TACT_DODGE && dodge_macro_frames > 0);
         SDL_SetRenderDrawColor(ren, tb->r, tb->g, tb->b, pressed ? 210 : 105);
         SDL_RenderFillRect(ren, &rc);
         SDL_SetRenderDrawColor(ren, 255, 255, 255, pressed ? 255 : 175);
@@ -1420,35 +1776,65 @@ static void save_bmp(const char *path, const uint32_t *argb)
     if (s) { SDL_SaveBMP(s, path); SDL_FreeSurface(s); }
 }
 
+static void composite_ui_over_game(uint32_t *out)
+{
+    for (int i = 0; i < W * H; i++) {
+        uint32_t s = ui[i], a = (s >> 24) & 0xFFu;
+        if (a == 0) { out[i] = game[i]; continue; }
+        if (a == 255) { out[i] = s; continue; }
+        uint32_t d = game[i];
+        uint32_t r = (((s >> 16) & 0xFFu) * a + ((d >> 16) & 0xFFu) * (255 - a)) / 255;
+        uint32_t g = (((s >>  8) & 0xFFu) * a + ((d >>  8) & 0xFFu) * (255 - a)) / 255;
+        uint32_t b = (( s        & 0xFFu) * a + ( d        & 0xFFu) * (255 - a)) / 255;
+        out[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+    }
+}
+
 static int run_self_test(const char *outdir)
 {
     char p[1024];
+    static uint32_t comp[W * H];
+
     state = ST_MENU; page = P_START; sel = 0; draw_menu();
     snprintf(p, sizeof p, "%s%c01_start.bmp", outdir, PATH_SEP); save_bmp(p, ui);
 
-    page = P_CHEATS; sel = 0; cfg.c_weapon = 1; cfg.c_lives = 1; cfg.c_bombs = 1; cfg.c_god = 1; draw_menu();
+    page = P_CHEATS; sel = 0; cfg.c_weapon = 5; cfg.c_vulcan = 1; cfg.c_continues = 1; draw_menu();
     snprintf(p, sizeof p, "%s%c02_cheats.bmp", outdir, PATH_SEP); save_bmp(p, ui);
 
-    // 1) Fast Start 1P with Shotgun + 9 Lives + 5 Bombs + Mouse Aim at (205, 55)!
-    launch_fast_game(false, false);
-    aim_x = 205; aim_y = 55; aim_active = true;
-    for (int i = 0; i < 15; i++) { apply_cheats_frame(); step2(1, 0, 0); }
-    snprintf(p, sizeof p, "%s%c03_carson_sgun_aim.bmp", outdir, PATH_SEP); save_bmp(p, game);
+    page = P_OPTIONS; sel = 0; cfg.twin_stick = 1; cfg.reticle = 2; cfg.bullet_time = 1; cfg.rewind = 1; draw_menu();
+    snprintf(p, sizeof p, "%s%c03_options.bmp", outdir, PATH_SEP); save_bmp(p, ui);
 
-    // 2) Test Machine Gun (3) & Vulcan (4) live weapon swap
-    cfg.c_weapon = 3;
-    for (int i = 0; i < 10; i++) { apply_cheats_frame(); step2(1, 0, 0); }
-    snprintf(p, sizeof p, "%s%c04_weapon_mgun.bmp", outdir, PATH_SEP); save_bmp(p, game);
+    // 1) Red Outlaw Costume + Permanent Vulcan Fever + Twin-Stick strafe right while aiming left + ARCADE reticle!
+    cfg.costume = 3; cfg.c_vulcan = 1; cfg.c_hardcore = 0; cfg.reticle = 2; cfg.twin_stick = 1;
+    launch_fast_game(false, false, false);
+    aim_x = 64; aim_y = 64; aim_active = true; twin_move_dx = 1;
+    for (int i = 0; i < 25; i++) {
+        apply_cheats_frame();
+        step2(1, 1u << RETRO_DEVICE_ID_JOYPAD_Y, 0);
+        if ((i % 4) == 0) rewind_push();
+    }
+    twin_move_dx = 0;
+    draw_gameplay_hud_overlay();
+    composite_ui_over_game(comp);
+    snprintf(p, sizeof p, "%s%c04_vulcan_twinstick_red.bmp", outdir, PATH_SEP); save_bmp(p, comp);
 
-    cfg.c_weapon = 4;
-    for (int i = 0; i < 10; i++) { apply_cheats_frame(); step2(1, 0, 0); }
-    snprintf(p, sizeof p, "%s%c05_weapon_vgun.bmp", outdir, PATH_SEP); save_bmp(p, game);
+    // 2) Boss Rush Mode -> drops straight into Carson City Robot Boss!
+    cfg.costume = 0; cfg.c_vulcan = 0; cfg.c_weapon = 0; cfg.reticle = 1;
+    launch_fast_game(false, false, true);
+    for (int i = 0; i < 280; i++) { apply_cheats_frame(); step2(1, 0, 0); }
+    bullet_time_active = true;
+    cfg.c_hardcore = 1;
+    apply_cheats_frame();
+    step2(2, 0, 0);
+    draw_gameplay_hud_overlay();
+    composite_ui_over_game(comp);
+    snprintf(p, sizeof p, "%s%c05_bossrush_bt_laser.bmp", outdir, PATH_SEP); save_bmp(p, comp);
+    bullet_time_active = false; cfg.c_hardcore = 0; boss_rush_mode = false;
 
-    // 3) Stage Select launcher!
-    launch_fast_game(false, true);
+    // 3) Stage Select + Classic Mode sanity check
+    launch_fast_game(false, true, false);
     snprintf(p, sizeof p, "%s%c06_stage_select.bmp", outdir, PATH_SEP); save_bmp(p, game);
 
-    // 4) Classic Mode boot check (Natsume logo intact!)
     launch_classic_boot();
     step2(220, 0, 0);
     snprintf(p, sizeof p, "%s%c07_classic_natsume.bmp", outdir, PATH_SEP); save_bmp(p, game);
@@ -1545,6 +1931,7 @@ int main(int argc, char **argv)
 
     Uint64 freq = SDL_GetPerformanceFrequency();
     Uint64 next_frame = SDL_GetPerformanceCounter();
+    uint32_t render_tick = 0;
 
     while (running) {
         SDL_Event ev;
@@ -1569,19 +1956,29 @@ int main(int argc, char **argv)
                 if (ev.key.keysym.sym == SDLK_F5 && started)
                     show_toast(save_state(cfg.slot) ? T("ESTADO GUARDADO", "STATE SAVED") : T("ERROR", "ERROR"));
                 else if (ev.key.keysym.sym == SDLK_F7) {
-                    if (load_state(cfg.slot)) { state = ST_PLAY; show_toast(T("ESTADO CARGADO", "STATE LOADED")); }
+                    if (load_state(cfg.slot)) { state = ST_PLAY; rewind_clear(); show_toast(T("ESTADO CARGADO", "STATE LOADED")); }
                     else show_toast(T("SLOT VACIO", "EMPTY SLOT"));
                 } else if (ev.key.keysym.sym == SDLK_F6) {
                     cfg.slot = (cfg.slot + 1) % 3; save_cfg();
                     char m[32]; snprintf(m, sizeof m, "SLOT %d", cfg.slot + 1); show_toast(m);
+                } else if (ev.key.keysym.sym == SDLK_F8 && state == ST_PLAY) {
+                    trigger_skip_to_boss();
                 } else if (ev.key.keysym.sym == SDLK_F11) {
                     cfg.fullscreen = !cfg.fullscreen; apply_video_settings(); save_cfg();
+                } else if (state == ST_PLAY && ev.key.keysym.scancode == SDL_SCANCODE_V) {
+                    lasso_macro_frames = 7; // Quick Instant Lasso macro!
+                } else if (state == ST_PLAY && ev.key.keysym.scancode == SDL_SCANCODE_SPACE) {
+                    dodge_macro_frames = 10; dodge_macro_dir = last_move_dir; // Quick Dodge Roll macro!
                 } else handle(key_action(ev.key.keysym.sym));
                 break;
             case SDL_CONTROLLERBUTTONDOWN:
                 pad_active_recently = true; last_pad_tick = SDL_GetTicks();
                 if (binding >= 0 && bind_pad) { cfg.gp[binding] = ev.cbutton.button; save_cfg(); binding = -1; break; }
-                handle(pad_action(ev.cbutton.button));
+                if (state == ST_PLAY && ev.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                    lasso_macro_frames = 7;
+                } else {
+                    handle(pad_action(ev.cbutton.button));
+                }
                 break;
             case SDL_MOUSEMOTION:
                 if (state == ST_PLAY && cfg.mouse_aim) {
@@ -1599,6 +1996,8 @@ int main(int argc, char **argv)
                     if (ev.button.button == SDL_BUTTON_LEFT)   mouse_fire_held = true;
                     if (ev.button.button == SDL_BUTTON_RIGHT)  mouse_jump_held = true;
                     if (ev.button.button == SDL_BUTTON_MIDDLE) mouse_bomb_pulse = true;
+                    if (ev.button.button == SDL_BUTTON_X1)     lasso_macro_frames = 7;
+                    if (ev.button.button == SDL_BUTTON_X2)     { dodge_macro_frames = 10; dodge_macro_dir = last_move_dir; }
                 }
                 break;
             case SDL_MOUSEBUTTONUP:
@@ -1612,13 +2011,13 @@ int main(int argc, char **argv)
                 bool special = false;
                 for (int i = 0; i < NTOUCH_BTNS; i++) {
                     const tbtn_t *tb = &touch_btns[i];
-                    if (tb->btn >= 0) continue;
+                    if (tb->btn != TACT_MENU && tb->btn != TACT_SAVE && tb->btn != TACT_LOAD) continue;
                     if (fx >= tb->cx - tb->hw && fx <= tb->cx + tb->hw &&
                         fy >= tb->cy - tb->hh && fy <= tb->cy + tb->hh) {
                         if (tb->btn == TACT_MENU) pause_game();
                         else if (tb->btn == TACT_SAVE) show_toast(save_state(cfg.slot) ? T("ESTADO GUARDADO", "STATE SAVED") : T("ERROR", "ERROR"));
                         else if (tb->btn == TACT_LOAD) {
-                            if (load_state(cfg.slot)) show_toast(T("ESTADO CARGADO", "STATE LOADED"));
+                            if (load_state(cfg.slot)) { rewind_clear(); show_toast(T("ESTADO CARGADO", "STATE LOADED")); }
                             else show_toast(T("SLOT VACIO", "EMPTY SLOT"));
                         }
                         special = true; break;
@@ -1652,12 +2051,33 @@ int main(int argc, char **argv)
                 (pad[0] & (1u << RETRO_DEVICE_ID_JOYPAD_R)) &&
                 (pad[0] & (1u << RETRO_DEVICE_ID_JOYPAD_START))) {
                 pause_game();
+            } else if (rewind_active) {
+                if (audio) SDL_ClearQueuedAudio(audio);
+                if ((render_tick & 1u) == 0 && rewind_pop()) {
+                    core.run(); // refresh video buffer for restored snapshot
+                }
             } else {
-                apply_cheats_frame();
-                core.run();
-                total_frames++;
+                // Bullet Time runs the SNES core at 50% speed (every 2nd 60Hz tick)
+                if (!bullet_time_active || (render_tick & 1u) == 0) {
+                    if ((total_frames & 3u) == 0) rewind_push();
+                    apply_cheats_frame();
+                    core.run();
+                    total_frames++;
+                    // Hardcore 1-Hit Duel Mode: no continues allowed on death!
+                    if (cfg.c_hardcore && hardcore_was_alive) {
+                        uint8_t *m = wram();
+                        if (m && m[RAM_P1_ALIVE] == 0x00) {
+                            hardcore_was_alive = false;
+                            started = false; boss_rush_mode = false;
+                            state = ST_MENU; page = P_START; sel = 0;
+                            if (audio) SDL_ClearQueuedAudio(audio);
+                            show_toast(T("DUELO PERDIDO (HARDCORE)!", "DUEL LOST (HARDCORE)!"));
+                        }
+                    }
+                }
             }
         }
+        render_tick++;
 
         int rw = 0, rh = 0; SDL_GetRendererOutputSize(ren, &rw, &rh);
         SDL_Rect dst = game_dst_rect(rw, rh);
@@ -1667,9 +2087,7 @@ int main(int argc, char **argv)
         if (state == ST_PLAY) {
             SDL_UpdateTexture(tex_game, NULL, game, gw * 4);
             SDL_RenderCopy(ren, tex_game, NULL, &dst);
-            if (*toast) {
-                memset(ui, 0, sizeof ui);
-                draw_toast();
+            if (draw_gameplay_hud_overlay()) {
                 SDL_SetTextureBlendMode(tex_ui, SDL_BLENDMODE_BLEND);
                 SDL_UpdateTexture(tex_ui, NULL, ui, W * 4);
                 SDL_RenderCopy(ren, tex_ui, NULL, &dst);
@@ -1695,6 +2113,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < 4; i++) if (pads[i]) SDL_GameControllerClose(pads[i]);
     if (audio) SDL_CloseAudioDevice(audio);
     core.deinit();
+    rewind_free();
     free(rom_buf); free(title_snap);
     SDL_Quit();
     return 0;
