@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Wild Guns
+Comment=Enhanced Native SNES Port for Wild Guns (Mouse/Touch Aim, Arsenal, Co-Op, Classic Mode)
+Exec=wildguns
+Icon=wild-guns
+Categories=Game;ActionGame;Shooter;
+Terminal=false

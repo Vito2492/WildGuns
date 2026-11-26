@@ -1,0 +1,36 @@
+====================================================================
+  WILD GUNS - PORT NATIVO MEJORADO (WINDOWS / LINUX / ANDROID)
+====================================================================
+
+IMPORTANTE (USO LEGAL):
+  Este ejecutable NO incluye ninguna ROM ni graficos protegidos.
+  Al abrir WildGuns.exe por primera vez te pedira seleccionar tu
+  propia copia legal de:
+      Wild Guns (USA).sfc  (o .smc, 1 MB, CRC32: 085D8D14)
+  Tambien puedes arrastrar la ROM a la ventana o dejarla en la
+  misma carpeta que WildGuns.exe.
+
+MODOS DE INICIO EN EL MENU:
+  - INICIO RAPIDO 1P : Salta directo a Carson City (Clint o Annie).
+  - INICIO RAPIDO 2P : Inicia cooperativo local para 2 jugadores.
+  - MODO CLASICO     : Arranca desde el logo de Natsume, intro y
+                       titulo original manteniendo tus trucos activos.
+  - ELEGIR ESCENARIO : Ejecuta el codigo oficial de Natsume y abre
+                       el Stage Select original (6 zonas).
+  - MODO VERSUS      : Salta directo al modo V.S.
+
+APUNTADO CON RATON (PC) Y PANTALLA TACTIL (ANDROID):
+  - Mueve el raton sobre la ventana para apuntar la mira de P1 al
+    instante (activar/desactivar en OPCIONES -> MIRA RATON/TACTIL).
+  - Clic Izquierdo = Disparar | Clic Derecho = Saltar/Rodar
+    Clic Central   = Bomba
+
+CONTROLES RAPIDOS (TECLADO):
+  Jugador 1: Flechas o WASD (mover) | Z (disparar) | X (saltar)
+             C (bomba) | A (accion) | Enter (Start)
+  Jugador 2: IJKL (mover) | N (disparar) | M (saltar) | H (bomba)
+             U (accion) | O (Start)
+  Menu del Port     : ESC o F1 (en mando: Guide o L1+R1+Start)
+  Guardar / Cargar  : F5 (guardar) | F7 (cargar) | F6 (cambiar slot)
+  Pantalla completa : F11 o Alt+Enter
+====================================================================
