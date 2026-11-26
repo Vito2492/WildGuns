@@ -93,7 +93,7 @@ jobs:
       - name: Signing key
         id: key
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 || secrets.MANSION_KEYSTORE_B64 }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > $RUNNER_TEMP/release.keystore
@@ -104,9 +104,9 @@ jobs:
           fi
       - name: Build
         env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || secrets.MANSION_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || secrets.MANSION_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.MANSION_KEY_PASSWORD }}
         run: |
           ndk=$(sed -n 's/^Pkg.Revision *= *//p' $ANDROID_NDK_HOME/source.properties)
           v=$(cat VERSION)
