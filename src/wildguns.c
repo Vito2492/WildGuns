@@ -95,6 +95,8 @@ static bool overclock;
 static bool scripting;
 static bool vars_dirty;
 static SDL_AudioDeviceID audio;
+// queued audio above which the game waits (about 3 frames), set when the device opens
+static Uint32 audio_ahead_bytes;
 static bool mute;
 static bool bullet_time_active;
 static bool rewind_active;
@@ -1916,6 +1918,7 @@ int main(int argc, char **argv)
         want.samples = 1024;
         audio = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
         if (audio) SDL_PauseAudioDevice(audio, 0);
+        if (audio) audio_ahead_bytes = (Uint32)(have.freq / 60) * 4u * 3u;
     }
 
     boot_and_cache_snapshots();
@@ -2045,6 +2048,14 @@ int main(int argc, char **argv)
 
         poll_stick_menu();
 
+        // with sound open, the audio queue paces the game: wait only while
+        // several frames are still queued, so it never runs dry (crackle, slowdown)
+        if (audio && state == ST_PLAY && !rewind_active) {
+            // capped: if the sound device stops draining, the game must not hang
+            Uint32 t0 = SDL_GetTicks();
+            while (SDL_GetQueuedAudioSize(audio) > audio_ahead_bytes && SDL_GetTicks() - t0 < 40u) SDL_Delay(1);
+        }
+
         if (state == ST_PLAY) {
             read_both_pads();
             if ((pad[0] & (1u << RETRO_DEVICE_ID_JOYPAD_L)) &&
@@ -2104,7 +2115,9 @@ int main(int argc, char **argv)
 
         next_frame += freq / 60;
         Uint64 now = SDL_GetPerformanceCounter();
-        if (next_frame > now) {
+        if (audio && state == ST_PLAY) {
+            next_frame = now; // the audio queue paced this frame
+        } else if (next_frame > now) {
             Uint32 ms = (Uint32)((next_frame - now) * 1000 / freq);
             if (ms > 0) SDL_Delay(ms);
         } else next_frame = now;
